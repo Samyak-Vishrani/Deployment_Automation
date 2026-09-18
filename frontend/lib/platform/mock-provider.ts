@@ -1,3 +1,4 @@
+import { api } from "@/lib/api";
 import {
   PIPELINE_STAGE_NAMES,
   type AiInsight,
@@ -408,33 +409,35 @@ export class MockPlatformProvider implements PlatformProvider {
   }
 
   async login(email: string, password: string) {
-    const response = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({ email, password }),
+    const body = await api.post<{ user?: Session["user"]; message?: string }>("/api/auth/login", {
+      email,
+      password,
+    }).catch((error: unknown) => {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error("Unable to sign in.");
     });
 
-    const body = (await response.json().catch(() => null)) as { user?: Session["user"]; message?: string } | null;
-    if (!response.ok || !body?.user) {
+    if (!body?.user) {
       throw new Error(body?.message ?? "Unable to sign in.");
     }
     return { user: body.user };
   }
 
   async logout() {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+    await api.post<void>("/api/auth/logout");
   }
 
   async getSession() {
-    const response = await fetch("/api/auth/me", { credentials: "include" });
-    if (response.status === 401) {
-      return null;
+    try {
+      return await api.get<Session>("/api/auth/me");
+    } catch (error) {
+      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 401) {
+        return null;
+      }
+      throw error;
     }
-    if (!response.ok) {
-      throw new Error("Unable to load the current session.");
-    }
-    return (await response.json()) as Session;
   }
 
   async listProjects() {

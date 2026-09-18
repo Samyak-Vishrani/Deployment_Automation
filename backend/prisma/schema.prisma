@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  githubConnections GitHubConnection[]
+  projects          Project[]
+
+  @@index([email])
+}
+
+model GitHubConnection {
+  id             String   @id @default(cuid())
+  userId         String
+  githubUserId   String?  @db.VarChar(255)
+  githubUsername String?  @db.VarChar(255)
+  accessToken    String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, githubUserId])
+  @@index([userId])
+  @@index([githubUserId])
+}
+
+model Project {
+  id             String   @id @default(cuid())
+  userId         String
+  name           String
+  githubRepoId   String?  @db.VarChar(255)
+  githubFullName String?  @db.VarChar(255)
+  githubUrl      String?  @db.Text
+  defaultBranch  String?  @db.VarChar(255)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  components ProjectComponent[]
+
+  @@unique([userId, githubFullName])
+  @@index([userId])
+  @@index([githubFullName])
+}
+
+model ProjectComponent {
+  id               String   @id @default(cuid())
+  projectId        String
+  type             String   @db.VarChar(100)
+  framework        String?  @db.VarChar(100)
+  language         String?  @db.VarChar(100)
+  path             String?  @db.VarChar(500)
+  packageManager   String?  @db.VarChar(50)
+  detectedVersion  String?  @db.VarChar(100)
+  confidence       Float?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([type])
+  @@index([framework])
+}

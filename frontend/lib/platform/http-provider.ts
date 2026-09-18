@@ -1,3 +1,4 @@
+import { api } from "@/lib/api";
 import type {
   AiInsight,
   Deployment,
@@ -45,19 +46,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export class HttpPlatformProvider implements PlatformProvider {
   login(email: string, password: string) {
-    return request<Session>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    });
+    return api.post<Session>("/api/auth/login", { email, password });
   }
 
   async logout() {
-    await request<void>("/auth/logout", { method: "POST" });
+    await api.post<void>("/api/auth/logout");
   }
 
   getSession() {
-    return request<Session>("/auth/me").catch((error: unknown) => {
-      if (error instanceof PlatformApiError && error.status === 401) {
+    return api.get<Session>("/api/auth/me").catch((error: unknown) => {
+      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 401) {
         return null;
       }
       throw error;
