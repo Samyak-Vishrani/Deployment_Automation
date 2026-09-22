@@ -1,0 +1,127 @@
+# Phase 4: Repository Analysis API — Walkthrough
+
+## Endpoints Added
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| `POST` | `/api/projects/:projectId/analyze` | Runs the deterministic analysis engine and persists detected components |
+| `GET`  | `/api/projects/:projectId/analysis` | Returns the project's latest detected components |
+
+Both endpoints require authentication via the existing demo JWT cookie.
+
+---
+
+## Service Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Route as POST /analyze Route
+    participant Auth as require-auth
+    participant AnalysisSvc as analysis.service
+    participant Prisma
+    participant GitHubSvc as github.service
+    participant Detector as detection.service
+
+    Client->>Route: POST /projects/:id/analyze
+    Route->>Auth: getAuthUser()
+    Auth-->>Route: user | null
+    Route->>AnalysisSvc: analyzeProject(projectId, userId)
+    AnalysisSvc->>Prisma: project.findUnique (ownership check)
+    AnalysisSvc->>Prisma: gitHubConnection.findFirst (get token)
+    AnalysisSvc->>GitHubSvc: getRepositoryTree(repo, branch, token)
+    GitHubSvc-->>AnalysisSvc: tree
+    AnalysisSvc->>Detector: detectComponents(tree, fetchContent)
+    Detector->>GitHubSvc: getFileContent (for each config file)
+    Detector-->>AnalysisSvc: DetectedComponent[]
+    AnalysisSvc->>Prisma: $transaction(deleteMany + createMany)
+    AnalysisSvc-->>Route: AnalysisResult
+    Route-->>Client: 200 JSON
+```
+
+---
+
+## Files Created
+
+### Services (business logic)
+
+| File | Purpose |
+|------|---------|
+| [`require-auth.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/lib/auth/require-auth.ts) | Shared auth helper extracting user from cookies |
+| [`github.service.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/lib/github/github.service.ts) | GitHub API client (file tree + file content via plain `fetch`) |
+| [`detection.service.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/lib/analysis/detection.service.ts) | Deterministic detection engine |
+| [`analysis.service.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/lib/analysis/analysis.service.ts) | Orchestration: ownership → GitHub → detect → persist |
+
+### API Routes (thin controllers)
+
+| File | Endpoint |
+|------|----------|
+| [`analyze/route.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/app/api/projects/[projectId]/analyze/route.ts) | `POST /api/projects/:id/analyze` |
+| [`analysis/route.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/app/api/projects/[projectId]/analysis/route.ts) | `GET /api/projects/:id/analysis` |
+
+### Tests
+
+| File | Tests |
+|------|-------|
+| [`github.service.test.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/lib/github/github.service.test.ts) | 5 tests (fetch tree, fetch content, error codes) |
+| [`detection.service.test.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/lib/analysis/detection.service.test.ts) | 11 tests (Next.js, React, Express, Django, Go, monorepo, Dockerfile dedup, empty tree, malformed JSON) |
+| [`analysis.service.test.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/lib/analysis/analysis.service.test.ts) | 11 tests (success, repeated analysis, unauthorized, missing connection, GitHub errors, GET retrieval) |
+
+### Config
+
+| File | Purpose |
+|------|---------|
+| [`vitest.config.ts`](file:///b:/placement%20course/BE%20PROJECT/Deployment_Automation/backend/vitest.config.ts) | Vitest configuration with `@/` path alias (was missing) |
+
+---
+
+## Database Behavior
+
+- **On first analysis**: Old components for the project are deleted (if any), and newly detected components are inserted. This happens in a Prisma `$transaction`.
+- **On repeated analysis**: The same delete+create flow runs. No duplicates are ever created — old results are atomically replaced.
+- **GET /analysis**: Simply reads `ProjectComponent` records from the database. No secrets are exposed in the response.
+
+---
+
+## Detection Engine Coverage
+
+The deterministic detection engine identifies components from these config files:
+
+| Config File | Frameworks Detected |
+|-------------|-------------------|
+| `package.json` | Next.js, React, Vue, Angular, Express, Fastify, NestJS, generic Node |
+| `requirements.txt` / `Pipfile` / `pyproject.toml` | Django, Flask, FastAPI, generic Python |
+| `go.mod` | Gin, Fiber, generic Go |
+| `Dockerfile` | Docker (lower confidence, skipped if stronger signal exists) |
+
+---
+
+## Error Handling
+
+| Error Scenario | HTTP Status | Error Code |
+|----------------|-------------|------------|
+| Not authenticated | 401 | `unauthorized` |
+| Project not found | 404 | `project_not_found` |
+| User doesn't own project | 403 | `unauthorized` |
+| No GitHub repo linked | 400 | `github_not_connected` |
+| No GitHub OAuth connection | 400 | `github_not_connected` |
+| Repo not found on GitHub | 404 | `repo_not_found` |
+| GitHub API failure | 502 | `github_api_error` |
+| Detection engine failure | 500 | `analysis_failed` |
+
+---
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| `prisma generate` | ✅ Passed |
+| `npm run test` | ✅ 28 tests passed (4 test files) |
+| `npm run typecheck` | ✅ No errors |
+| `npm run lint` | ✅ No errors |
+
+---
+
+## No Issues
+
+All verification checks passed. No schema changes were needed (the existing `ProjectComponent` model matches perfectly). No existing APIs were modified.
