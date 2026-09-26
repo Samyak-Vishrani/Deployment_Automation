@@ -8,3 +8,12 @@ coverage/
 !.env.example
 *.log
 *.tsbuildinfo
+
+# secrets - never commit these
+*.pem
+
+# generated Prisma client
+generated/
+
+# build workspaces and deployment logs for deployed apps
+data/

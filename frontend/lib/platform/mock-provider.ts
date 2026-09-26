@@ -1,4 +1,4 @@
-import { api } from "@/lib/api";
+import { fetchSession, signOut } from "@/lib/api/auth";
 import {
   PIPELINE_STAGE_NAMES,
   type AiInsight,
@@ -10,7 +10,6 @@ import {
   type PlatformProvider,
   type Project,
   type ProjectInput,
-  type Session,
   type SimulationMode,
   type StageStatus,
 } from "./types";
@@ -408,36 +407,14 @@ export class MockPlatformProvider implements PlatformProvider {
     return store;
   }
 
-  async login(email: string, password: string) {
-    const body = await api.post<{ user?: Session["user"]; message?: string }>("/api/auth/login", {
-      email,
-      password,
-    }).catch((error: unknown) => {
-      if (error instanceof Error) {
-        throw error;
-      }
-      throw new Error("Unable to sign in.");
-    });
-
-    if (!body?.user) {
-      throw new Error(body?.message ?? "Unable to sign in.");
-    }
-    return { user: body.user };
+  // Auth is real even in mock mode: the session comes from GitHub sign-in on
+  // the backend, only the project data below is simulated.
+  logout() {
+    return signOut();
   }
 
-  async logout() {
-    await api.post<void>("/api/auth/logout");
-  }
-
-  async getSession() {
-    try {
-      return await api.get<Session>("/api/auth/me");
-    } catch (error) {
-      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 401) {
-        return null;
-      }
-      throw error;
-    }
+  getSession() {
+    return fetchSession();
   }
 
   async listProjects() {

@@ -14,16 +14,22 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
-    "prisma:validate": "prisma validate"
+    "prisma:validate": "prisma validate",
+    "test:e2e": "node test/e2e-push.js"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "dockerode": "^4.0.4",
+    "micromatch": "^4.0.8",
     "next": "16.3.4",
     "prisma": "^5.22.0",
     "react": "19.2.0",
-    "react-dom": "19.2.0"
+    "react-dom": "19.2.0",
+    "tar": "^7.4.3"
   },
   "devDependencies": {
+    "@types/dockerode": "^3.3.34",
+    "@types/micromatch": "^4.0.9",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

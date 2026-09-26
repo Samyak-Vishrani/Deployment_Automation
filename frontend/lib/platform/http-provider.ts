@@ -1,4 +1,4 @@
-import { api } from "@/lib/api";
+import { fetchSession, signOut } from "@/lib/api/auth";
 import type {
   AiInsight,
   Deployment,
@@ -8,7 +8,6 @@ import type {
   PlatformProvider,
   Project,
   ProjectInput,
-  Session,
   SimulationMode,
 } from "./types";
 
@@ -45,21 +44,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export class HttpPlatformProvider implements PlatformProvider {
-  login(email: string, password: string) {
-    return api.post<Session>("/api/auth/login", { email, password });
-  }
-
-  async logout() {
-    await api.post<void>("/api/auth/logout");
+  logout() {
+    return signOut();
   }
 
   getSession() {
-    return api.get<Session>("/api/auth/me").catch((error: unknown) => {
-      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 401) {
-        return null;
-      }
-      throw error;
-    });
+    return fetchSession();
   }
 
   listProjects() {

@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
-import { DEMO_COOKIE_NAME, verifyDemoToken } from "@/lib/auth/demo-jwt";
+import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth/session";
+import { findPublicUser } from "@/lib/auth/users";
 
 export type AuthUser = {
   id: string;
@@ -10,21 +11,20 @@ export type AuthUser = {
 
 /**
  * Extracts and verifies the authenticated user from the request cookies.
- * Returns null if the user is not authenticated.
+ * Returns null if the user is not authenticated, or if the account the token
+ * names no longer exists.
  */
 export async function getAuthUser(): Promise<AuthUser | null> {
   const cookieStore = await cookies();
-  const token = cookieStore.get(DEMO_COOKIE_NAME)?.value;
-  const claims = verifyDemoToken(token);
-
+  const claims = verifySessionToken(cookieStore.get(SESSION_COOKIE_NAME)?.value);
   if (!claims) {
     return null;
   }
 
-  return {
-    id: claims.sub,
-    email: claims.email,
-    name: claims.name,
-    role: claims.role,
-  };
+  const user = await findPublicUser(claims.sub);
+  if (!user) {
+    return null;
+  }
+
+  return { id: user.id, email: user.email, name: user.name, role: user.role };
 }

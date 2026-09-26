@@ -9,6 +9,18 @@ export default defineConfig([
     ".next/**",
     "node_modules/**",
     "coverage/**",
+    "data/**",
     "next-env.d.ts",
   ]),
+  {
+    // test/e2e-push.js is run by plain `node`, outside the Next.js build, so it
+    // has to be CommonJS. The TypeScript-oriented rules below do not apply to
+    // it, and forcing ESM here would only mean adding a build step to a script
+    // whose whole point is having none.
+    files: ["test/**/*.js"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+      "@typescript-eslint/no-unused-expressions": "off",
+    },
+  },
 ]);

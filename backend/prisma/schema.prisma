@@ -7,11 +7,28 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Terminal and in-flight states of one build-and-run attempt.
+enum DeploymentStatus {
+  queued
+  running
+  success
+  failed
+  cancelled
+}
+
+enum DeploymentTrigger {
+  push
+  manual
+  rollback
+}
+
 model User {
   id           String   @id @default(cuid())
   name         String
   email        String   @unique
   passwordHash String?
+  /// GitHub avatar, refreshed on every GitHub sign-in.
+  avatarUrl    String?  @db.Text
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -38,22 +55,93 @@ model GitHubConnection {
 }
 
 model Project {
-  id             String   @id @default(cuid())
-  userId         String
-  name           String
-  githubRepoId   String?  @db.VarChar(255)
-  githubFullName String?  @db.VarChar(255)
-  githubUrl      String?  @db.Text
-  defaultBranch  String?  @db.VarChar(255)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id     String @id @default(cuid())
+  userId String
+  name   String
 
-  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  components ProjectComponent[]
+  // -------------------------------------------------- repository (phase 3/4) --
+  /// Display fields the repository-analysis phase reads. Kept alongside the
+  /// deployment fields below rather than folded into them: analysis identifies a
+  /// repo by "owner/repo", the push pipeline identifies it by numeric id, and
+  /// collapsing the two would make one of the phases lossy.
+  githubRepoId   String? @db.VarChar(255)
+  githubFullName String? @db.VarChar(255)
+  githubUrl      String? @db.Text
+  defaultBranch  String? @db.VarChar(255)
+
+  // ----------------------------------------------- push-to-deploy (phase 3) --
+  /// Slug. Doubles as the Docker image and container name, so it must be unique
+  /// and DNS/CLI safe: lowercase letters, digits and dashes only. Separate from
+  /// `name`, which is a human-facing label and is not constrained.
+  slug String? @unique
+
+  /// GitHub's numeric repository id. THE routing key for an incoming push.
+  /// Chosen over "owner/repo" because it survives renames and transfers, and
+  /// because it sidesteps case-sensitivity entirely (GitHub owner/repo are
+  /// case-insensitive, but the push payload preserves the creator's casing, so
+  /// a string match silently fails on "Samyak/App" vs "samyak/app").
+  /// Int, not BigInt. BigInt would make every JSON.stringify of a Project throw,
+  /// which is a daily cost for a distant problem. Sizing, measured rather than
+  /// assumed: a repo created in 2026 has id ~1.36e9 against Int4's 2.15e9
+  /// ceiling, so roughly 0.8e9 of headroom - years, not decades.
+  repoId Int?
+
+  /// Display only, and refreshed from every push so a repo rename self-heals.
+  repoFullName String?
+  owner        String?
+  repo         String?
+
+  /// Branch to deploy. NOT normalised - git refs are case-sensitive.
+  branch     String?
+  autoDeploy Boolean @default(true)
+
+  /// Installation that can mint tokens for this repo. Resolved once at create.
+  installationId String?
+  /// GitHub webhook id, so deleting the project can remove the hook.
+  githubHookId   Int?
+
+  /// Both NULL today; the whole app shares one webhook secret and one callback
+  /// URL. Present so per-project secrets become a backfill rather than a
+  /// migration plus a route reshape. NULL means "use the global value".
+  webhookSecret String?
+  callbackPath  String?
+
+  /// Glob patterns. Empty = deploy on any change. Matched with micromatch
+  /// against the files touched by the push.
+  watchPaths     String[] @default([])
+  dockerfilePath String   @default("Dockerfile")
+  buildContext   String   @default(".")
+  /// Runtime environment for the container. Never passed as --build-arg: build
+  /// args are baked into `docker history`.
+  envVars        Json     @default("{}")
+
+  /// Port the app listens on inside the container.
+  containerPort Int  @default(3000)
+  /// Port published on 127.0.0.1. Allocated under an advisory lock; the unique
+  /// index is the allocation record. NULL for a project that only ever gets
+  /// analysed and never deployed.
+  hostPort      Int? @unique
+
+  containerId String?
+  /// Last image tag that started successfully.
+  currentImageTag String?
+  /// The one before it. This is what "rollback" means with plain containers.
+  previousImageTag String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  components  ProjectComponent[]
+  deployments Deployment[]
 
   @@unique([userId, githubFullName])
   @@index([userId])
   @@index([githubFullName])
+  /// Mirrors the compound WHERE the push handler runs. Deliberately an index
+  /// and not a unique constraint: one push fanning out to several projects
+  /// (same repo, different Dockerfiles) is a feature, as it is in Dokploy.
+  @@index([autoDeploy, repoId, branch])
 }
 
 model ProjectComponent {
@@ -74,4 +162,39 @@ model ProjectComponent {
   @@index([projectId])
   @@index([type])
   @@index([framework])
+}
+
+model Deployment {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  status  DeploymentStatus  @default(queued)
+  trigger DeploymentTrigger @default(push)
+
+  branch        String
+  commitSha     String?
+  commitMessage String? @db.Text
+  commitAuthor  String?
+  /// X-GitHub-Delivery that caused this deployment.
+  deliveryId    String?
+
+  imageTag     String?
+  errorMessage String? @db.Text
+  /// Last 64KB of the build log, captured at terminal state so history survives
+  /// log-file cleanup. The live log lives on disk, not here: a TEXT column
+  /// appended per line means one UPDATE per line of build output.
+  logTail      String? @db.Text
+
+  queuedAt   DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  /// The durable idempotency backstop. Postgres treats NULLs as distinct, so
+  /// manual deploys (deliveryId NULL) are unlimited, while a GitHub redelivery
+  /// arriving after a restart - when the in-memory DeliveryStore is empty -
+  /// hits this constraint instead of deploying twice. Catch P2002.
+  @@unique([projectId, deliveryId])
+  @@index([projectId, queuedAt(sort: Desc)])
+  @@index([status])
 }

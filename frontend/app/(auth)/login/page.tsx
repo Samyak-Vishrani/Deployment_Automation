@@ -1,31 +1,47 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
-import { usePlatform } from "@/lib/platform/context";
+import { fetchSession, githubLoginUrl } from "@/lib/api/auth";
 
+const ERROR_MESSAGES: Record<string, string> = {
+  access_denied: "GitHub sign-in was cancelled.",
+  invalid_state: "The sign-in link expired or was opened in another browser. Please try again.",
+  github_failed: "GitHub sign-in failed. Please try again.",
+  not_configured: "GitHub sign-in is not configured on the backend. Set GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET.",
+};
+
+// useSearchParams needs a Suspense boundary for the page to prerender.
 export default function LoginPage() {
-  const platform = usePlatform();
-  const router = useRouter();
-  const [email, setEmail] = useState("demo@orbitops.dev");
-  const [password, setPassword] = useState("orbitops");
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  return (
+    <Suspense>
+      <LoginScreen />
+    </Suspense>
+  );
+}
 
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setSubmitting(true);
-    setError("");
-    try {
-      await platform.login(email, password);
-      const next = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("next") : null;
-      router.replace(next || "/dashboard");
-    } catch (loginError) {
-      setError(loginError instanceof Error ? loginError.message : "Unable to sign in.");
-    } finally {
-      setSubmitting(false);
-    }
+function LoginScreen() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const next = params.get("next");
+  const errorCode = params.get("error");
+  const error = errorCode ? ERROR_MESSAGES[errorCode] ?? "Unable to sign in." : "";
+  const signedOut = params.get("signedOut") === "1";
+  const [redirecting, setRedirecting] = useState(false);
+
+  // Already signed in (e.g. the back button after login): skip the screen.
+  useEffect(() => {
+    let active = true;
+    fetchSession()
+      .then((session) => { if (active && session) router.replace(next || "/dashboard"); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [next, router]);
+
+  const signIn = (switchAccount: boolean) => {
+    setRedirecting(true);
+    window.location.assign(githubLoginUrl(next, switchAccount));
   };
 
   return (
@@ -33,7 +49,7 @@ export default function LoginPage() {
       <section className="login-story">
         <div className="login-story-top">
           <div className="brand-lockup login-brand"><span className="brand-mark"><Icon name="rocket" size={18} /></span><span><strong>OrbitOps</strong><small>Developer platform</small></span></div>
-          <span className="story-status"><span className="live-dot" /> Demo environment</span>
+          <span className="story-status"><span className="live-dot" /> GitHub sign-in</span>
         </div>
         <div className="story-content">
           <p className="eyebrow">One control plane for delivery</p>
@@ -51,17 +67,22 @@ export default function LoginPage() {
       <section className="login-panel">
         <div className="login-card">
           <div className="mobile-login-brand"><span className="brand-mark"><Icon name="rocket" size={18} /></span><strong>OrbitOps</strong></div>
-          <div className="login-heading"><span className="mini-kicker">Welcome back</span><h2>Sign in to your workspace</h2><p>Use the demo account to explore the delivery control plane.</p></div>
-          <form onSubmit={submit} className="form-stack">
-            <label className="field-label" htmlFor="email">Work email<input id="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></label>
-            <label className="field-label" htmlFor="password">Password<div className="input-with-icon"><Icon name="lock" size={16} /><input id="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></div></label>
+          <div className="login-heading">
+            <span className="mini-kicker">{signedOut ? "Signed out" : "Welcome"}</span>
+            <h2>Sign in to your workspace</h2>
+            <p>{signedOut ? "You have been signed out. Continue with the same GitHub account or pick a different one." : "OrbitOps uses your GitHub account to identify you. We only read your public profile and email address."}</p>
+          </div>
+          <div className="form-stack">
             {error ? <div className="form-error"><Icon name="circle-help" size={16} />{error}</div> : null}
-            <button className="button button-primary button-full" disabled={submitting} type="submit">{submitting ? <><span className="button-spinner" /> Signing in</> : <>Enter workspace <Icon name="arrow-up-right" size={16} /></>}</button>
-          </form>
-          <button className="demo-credentials" type="button" onClick={() => { setEmail("demo@orbitops.dev"); setPassword("orbitops"); setError(""); }}><span className="demo-dot" /><span><strong>Demo access</strong><small>demo@orbitops.dev · orbitops</small></span><Icon name="chevron-right" size={15} /></button>
-          <p className="login-note"><Icon name="shield" size={14} /> Development-only authentication. Production sessions will use a backend-issued HttpOnly JWT cookie.</p>
+            <button className="button button-primary button-full" disabled={redirecting} type="button" onClick={() => signIn(false)}>
+              {redirecting ? <><span className="button-spinner" /> Redirecting to GitHub</> : <><Icon name="github" size={16} /> Continue with GitHub</>}
+            </button>
+            <button className="button button-secondary button-full" disabled={redirecting} type="button" onClick={() => signIn(true)}>
+              <Icon name="users" size={16} /> Use a different GitHub account
+            </button>
+          </div>
+          <p className="login-note"><Icon name="shield" size={14} /> Signing out of OrbitOps does not sign you out of GitHub. To switch accounts, use &ldquo;Use a different GitHub account&rdquo;, or sign out at github.com first.</p>
         </div>
-        <div className="login-panel-footer"><span>Need access?</span><a href="mailto:platform@orbitops.dev">Contact platform team <Icon name="arrow-up-right" size={13} /></a></div>
       </section>
     </main>
   );

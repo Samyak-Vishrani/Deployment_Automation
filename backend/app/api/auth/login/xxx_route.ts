@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createDemoToken, DEMO_COOKIE_NAME } from "@/lib/auth/demo-jwt";
+import { createDemoToken, DEMO_COOKIE_NAME } from "@/lib/auth/xxx_demo-jwt";
 
 export const runtime = "nodejs";
 

@@ -293,6 +293,7 @@ a { color: inherit; text-decoration: none; }
 .log-dots i:nth-child(2) { background: #dbad60; }
 .log-dots i:nth-child(3) { background: #67c590; }
 .log-lines { max-height: 286px; overflow: auto; padding: 10px 0; }
+.raw-log { max-height: 420px; margin: 0; overflow: auto; padding: 12px 13px; color: #97a9c1; background: transparent; font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-line { display: grid; grid-template-columns: 58px 60px 1fr; gap: 10px; padding: 4px 13px; color: #97a9c1; font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; line-height: 1.5; }
 .log-line:hover { background: rgba(73,100,140,.12); }
 .log-time { color: #50647e; }
@@ -489,3 +490,14 @@ a { color: inherit; text-decoration: none; }
   .login-panel { padding-inline: 20px; }
   .login-heading h2 { font-size: 22px; }
 }
+
+/* Account menu (GitHub sign-in) */
+.avatar-image { object-fit: cover; padding: 0; }
+.account-menu { position: relative; }
+.account-trigger { display: inline-flex; padding: 0; background: none; border: 0; border-radius: 50%; cursor: pointer; }
+.account-trigger:focus-visible { outline: 2px solid rgba(122, 157, 222, .6); outline-offset: 2px; }
+.account-dropdown { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 240px; padding: 6px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 16px 40px rgba(0, 0, 0, .35); }
+.account-dropdown-head { display: flex; align-items: center; gap: 9px; padding: 8px 8px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.account-dropdown-item { width: 100%; display: flex; align-items: center; gap: 9px; padding: 9px 8px; color: #c7d6f2; background: none; border: 0; border-radius: 7px; font-size: 12px; text-align: left; cursor: pointer; }
+.account-dropdown-item:hover:not(:disabled) { background: rgba(68, 103, 161, .25); }
+.account-dropdown-item:disabled { opacity: .6; cursor: default; }

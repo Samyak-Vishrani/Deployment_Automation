@@ -1,0 +1,25 @@
+# Postgres for the backend.
+#
+# Published on 5433, not 5432, so it cannot collide with a Postgres already
+# running on the host. DATABASE_URL in backend/.env must match.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orbitops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orbitops
+      POSTGRES_PASSWORD: orbitops
+      POSTGRES_DB: orbitops
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - orbitops-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U orbitops -d orbitops']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  orbitops-pgdata:

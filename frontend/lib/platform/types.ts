@@ -10,6 +10,8 @@ export type User = {
   email: string;
   role: string;
   avatarInitials: string;
+  avatarUrl?: string | null;
+  githubUsername?: string | null;
 };
 
 export type Session = {
@@ -132,7 +134,6 @@ export type AiInsight = {
 };
 
 export type PlatformProvider = {
-  login(email: string, password: string): Promise<Session>;
   logout(): Promise<void>;
   getSession(): Promise<Session | null>;
   listProjects(): Promise<Project[]>;

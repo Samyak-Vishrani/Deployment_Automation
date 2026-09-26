@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "./AuthGate";
 import { usePlatform } from "@/lib/platform/context";
+import { githubLoginUrl } from "@/lib/api/auth";
+import type { User } from "@/lib/platform/types";
 import { Icon, type IconName } from "./ui/Icon";
 
 type NavItem = {
@@ -20,6 +22,10 @@ const navItems: NavItem[] = [
   { label: "Pipelines", icon: "terminal", key: "pipelines", href: (id) => id ? `/projects/${id}/pipelines` : "/projects" },
   { label: "Deployments", icon: "rocket", key: "deployments", href: (id) => id ? `/projects/${id}/deployments` : "/projects" },
   { label: "Observability", icon: "trend-up", key: "observability", href: (id) => id ? `/projects/${id}/observability` : "/projects" },
+  // Last on purpose. activeKey() returns the first key contained in the path,
+  // and "/projects/x/deployments" contains "/deploy" too - so "deployments"
+  // has to be tested before this one.
+  { label: "Deploy", icon: "rocket", key: "deploy", href: () => "/deploy" },
 ];
 
 const secondaryItems: NavItem[] = [
@@ -29,6 +35,14 @@ const secondaryItems: NavItem[] = [
 ];
 
 const ACTIVE_PROJECT_KEY = "orbitops.activeProjectId";
+
+function Avatar({ user, className }: { user?: User; className: string }) {
+  if (user?.avatarUrl) {
+    // eslint-disable-next-line @next/next/no-img-element -- remote GitHub avatar, not worth an images.remotePatterns entry
+    return <img className={`${className} avatar-image`} src={user.avatarUrl} alt="" />;
+  }
+  return <span className={className}>{user?.avatarInitials ?? "?"}</span>;
+}
 
 function activeKey(pathname: string) {
   if (pathname === "/dashboard") return "dashboard";
@@ -45,6 +59,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const platform = usePlatform();
   const { session, clear } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const accountRef = useRef<HTMLDivElement>(null);
   const routeProjectId = pathname.match(/^\/projects\/([^/]+)/)?.[1];
   const projectIdFromRoute = routeProjectId && routeProjectId !== "new" ? routeProjectId : undefined;
   const [activeProjectId, setActiveProjectId] = useState<string | undefined>(projectIdFromRoute);
@@ -72,10 +89,39 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => { active = false; };
   }, [platform, projectIdFromRoute]);
 
-  const handleLogout = async () => {
-    await platform.logout();
+  useEffect(() => {
+    if (!accountOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!accountRef.current?.contains(event.target as Node)) setAccountOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setAccountOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [accountOpen]);
+
+  /**
+   * Clears the backend session cookie. With `switchAccount`, goes straight on
+   * to GitHub's account picker instead of the login screen.
+   */
+  const handleLogout = async (switchAccount = false) => {
+    setSigningOut(true);
+    try {
+      await platform.logout();
+    } catch {
+      // The cookie is httpOnly, so the backend is the only thing that can
+      // clear it; if that call failed the next /me will simply still succeed.
+    }
     clear();
-    router.replace("/login");
+    window.localStorage.removeItem(ACTIVE_PROJECT_KEY);
+    if (switchAccount) {
+      window.location.assign(githubLoginUrl("/dashboard", true));
+    } else {
+      router.replace("/login?signedOut=1");
+    }
   };
 
   const renderNav = (items: NavItem[]) => items.map((item) => {
@@ -124,9 +170,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <small>3 nodes · 14 workloads</small>
           </div>
           <div className="sidebar-user">
-            <span className="user-avatar">{session?.user.avatarInitials ?? "AS"}</span>
-            <span className="sidebar-user-copy"><strong>{session?.user.name ?? "Aarav Shah"}</strong><small>{session?.user.role ?? "Platform admin"}</small></span>
-            <button className="icon-button ghost-button" aria-label="Sign out" onClick={handleLogout}><Icon name="log-out" size={16} /></button>
+            <Avatar user={session?.user} className="user-avatar" />
+            <span className="sidebar-user-copy"><strong>{session?.user.name}</strong><small>{session?.user.role}</small></span>
+            <button className="icon-button ghost-button" aria-label="Sign out" title="Sign out" disabled={signingOut} onClick={() => void handleLogout()}><Icon name="log-out" size={16} /></button>
           </div>
         </div>
       </aside>
@@ -140,7 +186,21 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="topbar-actions">
             <div className="topbar-health"><span className="live-dot" /> All systems nominal</div>
             <button className="icon-button" aria-label="View notifications"><Icon name="bell" size={17} /><span className="notification-dot" /></button>
-            <div className="topbar-avatar">{session?.user.avatarInitials ?? "AS"}</div>
+            <div className="account-menu" ref={accountRef}>
+              <button className="account-trigger" aria-label="Account menu" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen((open) => !open)}>
+                <Avatar user={session?.user} className="topbar-avatar" />
+              </button>
+              {accountOpen ? (
+                <div className="account-dropdown" role="menu">
+                  <div className="account-dropdown-head">
+                    <Avatar user={session?.user} className="user-avatar" />
+                    <span className="sidebar-user-copy"><strong>{session?.user.name}</strong><small>{session?.user.githubUsername ? `@${session.user.githubUsername}` : session?.user.email}</small></span>
+                  </div>
+                  <button role="menuitem" className="account-dropdown-item" disabled={signingOut} onClick={() => void handleLogout(true)}><Icon name="users" size={15} /> Switch GitHub account</button>
+                  <button role="menuitem" className="account-dropdown-item" disabled={signingOut} onClick={() => void handleLogout()}><Icon name="log-out" size={15} /> Sign out</button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </header>
         <main className="main-content">{children}</main>
