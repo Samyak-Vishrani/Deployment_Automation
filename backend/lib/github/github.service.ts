@@ -3,6 +3,9 @@
  *
  * Uses the GitHub REST API v3 (api.github.com).
  * No SDK dependency — plain fetch calls.
+ *
+ * Token-agnostic: the analysis passes a GitHub App installation token minted
+ * by GithubAppService.
  */
 
 const GITHUB_API_BASE = "https://api.github.com";
@@ -40,22 +43,30 @@ function headers(accessToken: string): Record<string, string> {
   };
 }
 
+/** Encodes a repository path one segment at a time, keeping the slashes. */
+function encodePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 /**
  * Fetches the full recursive file tree for a repository.
+ *
+ * `ref` is a commit SHA or a branch name. Callers that read files afterwards
+ * should pass a SHA, so a push landing mid-analysis cannot mix two commits.
  */
 export async function getRepositoryTree(
   repoFullName: string,
-  branch: string,
+  ref: string,
   accessToken: string,
 ): Promise<GitHubTree> {
-  const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees/${branch}?recursive=1`;
+  const url = `${GITHUB_API_BASE}/repos/${repoFullName}/git/trees/${encodeURIComponent(ref)}?recursive=1`;
 
   const response = await fetch(url, { headers: headers(accessToken) });
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new GitHubApiError(
-      `Failed to fetch tree for ${repoFullName}@${branch}: ${response.status} ${body}`,
+      `Failed to fetch tree for ${repoFullName}@${ref}: ${response.status} ${body}`,
       response.status,
       url,
     );
@@ -71,10 +82,10 @@ export async function getRepositoryTree(
 export async function getFileContent(
   repoFullName: string,
   path: string,
-  branch: string,
+  ref: string,
   accessToken: string,
 ): Promise<string> {
-  const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${path}?ref=${branch}`;
+  const url = `${GITHUB_API_BASE}/repos/${repoFullName}/contents/${encodePath(path)}?ref=${encodeURIComponent(ref)}`;
 
   const response = await fetch(url, {
     headers: {
@@ -86,7 +97,7 @@ export async function getFileContent(
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new GitHubApiError(
-      `Failed to fetch ${path} from ${repoFullName}@${branch}: ${response.status} ${body}`,
+      `Failed to fetch ${path} from ${repoFullName}@${ref}: ${response.status} ${body}`,
       response.status,
       url,
     );

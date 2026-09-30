@@ -22,6 +22,12 @@ enum DeploymentTrigger {
   rollback
 }
 
+enum AnalysisStatus {
+  running
+  succeeded
+  failed
+}
+
 model User {
   id           String   @id @default(cuid())
   name         String
@@ -133,6 +139,7 @@ model Project {
 
   user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   components  ProjectComponent[]
+  analyses    Analysis[]
   deployments Deployment[]
 
   @@unique([userId, githubFullName])
@@ -144,22 +151,63 @@ model Project {
   @@index([autoDeploy, repoId, branch])
 }
 
+/// One run of the repository analysis, pinned to the commit it read.
+///
+/// A snapshot rather than a set of rows overwritten in place: the components
+/// below are only meaningful for the commit they were detected at, and keeping
+/// the last few runs is what lets "re-analyse the same commit" be a lookup.
+model Analysis {
+  id        String         @id @default(cuid())
+  projectId String
+  branch    String
+  commitSha String
+  status    AnalysisStatus @default(running)
+  /// "tree" (git tree API + file reads) or "tarball" (fallback for a truncated tree).
+  source    String
+  /// Skipped folders, unreadable files, truncation: [{ code, message, path? }].
+  warnings  Json           @default("[]")
+  /// Database usage hint: { detected, engine, evidence, suggestNeon }.
+  database  Json?
+  error     String?        @db.Text
+
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  project    Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  components ProjectComponent[]
+
+  @@index([projectId, createdAt(sort: Desc)])
+}
+
 model ProjectComponent {
   id               String   @id @default(cuid())
   projectId        String
+  /// NULL only on rows written before analyses were snapshotted.
+  analysisId       String?
   type             String   @db.VarChar(100)
+  /// "frontend" | "backend" | "unknown"
+  role             String?  @db.VarChar(20)
   framework        String?  @db.VarChar(100)
   language         String?  @db.VarChar(100)
   path             String?  @db.VarChar(500)
   packageManager   String?  @db.VarChar(50)
   detectedVersion  String?  @db.VarChar(100)
   confidence       Float?
+  installCmd       String?  @db.Text
+  buildCmd         String?  @db.Text
+  startCmd         String?  @db.Text
+  outputDir        String?  @db.VarChar(500)
+  runtimeVersion   String?  @db.VarChar(100)
+  /// Which files and dependencies triggered the detection.
+  evidence         Json     @default("[]")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  analysis Analysis? @relation(fields: [analysisId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+  @@index([analysisId])
   @@index([type])
   @@index([framework])
 }

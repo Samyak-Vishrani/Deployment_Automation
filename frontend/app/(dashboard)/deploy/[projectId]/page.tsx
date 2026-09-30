@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { AnalysisPanel } from "@/components/AnalysisPanel";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
@@ -259,6 +260,8 @@ export default function DeployProjectPage() {
           </div>
         </div>
       </div>
+
+      <AnalysisPanel projectId={projectId} />
 
       <div className="section-heading">
         <div>

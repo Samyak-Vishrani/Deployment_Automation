@@ -2,6 +2,25 @@
 
 > Companion to `PLAN_PHASE_5.md`.
 
+> **Status: implemented (2026-09-30).** Steps 1–9 are done and B1–B12 are fixed. Where the code
+> departs from the text below, and why:
+> - **Non-owner → 404 `project_not_found`**, not 403 `unauthorized`: the same "not yours looks like
+>   not there" rule as `ProjectsService`, so the analysis routes are not a project-id oracle.
+> - **React needs a bundler to count as a frontend.** A server that depends on `react` (to render
+>   emails, say) is detected by its server framework or as plain `node` instead. `hono` and `koa`
+>   were added to the backend list for the same reason.
+> - **The "framework dependency or a start/dev script" rule applies to every `package.json`,** not
+>   only the root, so shared workspace packages are not reported as apps. A root that declares
+>   workspaces needs a framework dependency: `"dev": "turbo dev"` does not make it an app.
+> - **Workspace globs limit Node candidates only.** A Python or Go service outside them is kept.
+> - **SvelteKit builds to `build/`,** not `dist/`. Nuxt (`.output`) was added to the table.
+> - **NestJS starts with `start:prod`** when the repo has that script, else `node dist/main`; never
+>   `start`, which Nest scaffolds as `nest start`.
+> - **Django with no database driver → engine `unknown`, Neon suggested,** rather than `sqlite`: its
+>   SQLite default does not survive a deploy.
+> - **`.devcontainer` is ignored** alongside the listed folders.
+> - **Failed runs:** only the most recent failed `Analysis` is kept; the last 5 *successful* ones are.
+
 ## Context
 
 `PLAN.md` Phase 4 ("find the frontend and backend folders and their frameworks") is 🟡. The

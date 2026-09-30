@@ -113,3 +113,43 @@ describe("getFileContent", () => {
     ).rejects.toThrow(GitHubApiError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// URL encoding
+// ---------------------------------------------------------------------------
+describe("URL encoding", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+  it("encodes a slashed branch in the tree URL", async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ sha: "a", tree: [], truncated: false }) });
+
+    await getRepositoryTree("owner/repo", "feature/x", "ghp_token");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/repo/git/trees/feature%2Fx?recursive=1",
+      expect.anything(),
+    );
+  });
+
+  it("leaves a commit SHA untouched", async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ sha: SHA, tree: [], truncated: false }) });
+
+    await getRepositoryTree("owner/repo", SHA, "ghp_token");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      `https://api.github.com/repos/owner/repo/git/trees/${SHA}?recursive=1`,
+      expect.anything(),
+    );
+  });
+
+  it("encodes each path segment but keeps the slashes", async () => {
+    mockFetch.mockResolvedValue({ ok: true, text: async () => "{}" });
+
+    await getFileContent("owner/repo", "my apps/web #1/what?.json", "feature/x", "ghp_token");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/repos/owner/repo/contents/my%20apps/web%20%231/what%3F.json?ref=feature%2Fx",
+      expect.anything(),
+    );
+  });
+});

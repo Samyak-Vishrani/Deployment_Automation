@@ -8,17 +8,16 @@ repository analysis (Phase 4) and the provider integrations (Phases 6–8). Verc
 built until there is a stored, user-confirmed **deployable component** per folder carrying
 `kind`, `rootDir`, build/start/output settings and a `provider`. Today:
 
-- `ProjectComponent` (`backend/prisma/schema.prisma:147`) only holds raw detection output
-  (`type, framework, language, path, packageManager, detectedVersion, confidence`), and
-  `analyzeProject` **deletes and recreates** those rows on every run
-  (`backend/lib/analysis/analysis.service.ts:196`) — so it cannot also hold provider ids or user edits.
-- Detection produces no `buildCmd` / `startCmd` / `outputDir` / role.
-- **Blocking bug:** analysis authenticates with `GitHubConnection.accessToken`
-  (`analysis.service.ts:105`), but GitHub OAuth sign-in deliberately never stores that token
-  (`backend/lib/auth/github-oauth.ts` header comment). Every analysis currently fails with
-  `github_not_connected`. It also reads `defaultBranch` instead of the project's `branch`.
-- The frontend has no analysis or configuration UI; `/projects/*` pages run on the mock provider,
-  only `/deploy/*` talks to the real backend.
+- `ProjectComponent` (`backend/prisma/schema.prisma`) holds detection output only, and belongs to
+  an `Analysis` snapshot. Every run writes a new snapshot and old ones are pruned (the last 5 are
+  kept) — so it cannot also hold provider ids or user edits.
+- ✅ Done in Phase 4 (`PLAN_PHASE_4_Remaining.md`): detection now produces `role`, `installCmd`,
+  `buildCmd`, `startCmd`, `outputDir`, `runtimeVersion` and `evidence` per component, plus a
+  database hint on the snapshot; analysis authenticates with the GitHub App installation token and
+  reads the project's `branch` at a pinned commit.
+- The frontend shows the analysis read-only (`frontend/components/AnalysisPanel.tsx`) but has no
+  configuration UI; `/projects/*` pages run on the mock provider, only `/deploy/*` talks to the
+  real backend.
 
 **Outcome:** connect repo → analysis runs → user reviews/edits one card per component (Frontend →
 Vercel, Backend → Render, optional Database → Neon) → saves → sees pre-flight results. The local
@@ -45,7 +44,7 @@ Docker deploy path keeps working untouched.
 ## Steps
 
 ### 1. Schema + migration — `backend/prisma/schema.prisma`
-Add enums and model; new migration `202609270001_deployment_configuration`:
+Add enums and model; new migration, timestamped after `202609300001_analysis_snapshot` (Phase 4):
 
 ```prisma
 enum ComponentKind     { frontend backend database }
@@ -78,32 +77,21 @@ model Component {
 ```
 Add `deployComponents Component[]` to `Project`. Run `npx prisma migrate dev --name deployment_configuration`.
 
-### 2. Fix analysis auth + branch — `backend/lib/analysis/analysis.service.ts`
-- Replace the `GitHubConnection.accessToken` lookup with the installation token: take
-  `project.installationId` (or `github.resolveInstallationId` for old rows) → `getInstallationToken`.
-  Inject `GithubAppService` (convert to a class registered in `backend/lib/runtime.ts`, or pass it
-  in as a parameter from the route — prefer adding `analysis` to the `Runtime` graph).
-- Use `project.branch ?? project.defaultBranch ?? "main"`.
-- Register the token with nothing that logs; keep the existing "no token in JSON" test.
-- Update `analysis.service.test.ts` mocks accordingly.
+### 2. Analysis auth + branch — ✅ done in Phase 4
+See `PLAN_PHASE_4_Remaining.md` step 1. `AnalysisService` (`backend/lib/analysis/analysis.service.ts`)
+is registered as `services().analysis`, uses the installation token, reads
+`project.branch ?? project.defaultBranch` and pins the run to that branch's head SHA. Nothing to do here.
 
-### 3. Build-settings derivation — new `backend/lib/analysis/build-settings.ts` (pure)
-`deriveBuildSettings(detected: DetectedComponent, files: { lockfiles: string[]; pkg?: PackageJson }) → { kind, name, buildCmd, startCmd, installCmd, outputDir, nodeVersion }`
+### 3. Build-settings derivation — ✅ done in Phase 4
+See `PLAN_PHASE_4_Remaining.md` step 6. `backend/lib/analysis/build-settings.ts` runs during
+detection, so every `ProjectComponent` already carries `role`, `installCmd`, `buildCmd`, `startCmd`,
+`outputDir` and `runtimeVersion`. This phase only maps them onto a proposed `Component`:
 
-- `kind`: `web`/`static` → frontend; `api`/`worker` → backend; `docker` → backend.
-- Package manager from lockfiles in the tree (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`)
-  → install/run prefix. `nodeVersion` from `package.json` `engines.node`.
-- Prefer the repo's own `scripts.build` / `scripts.start` when present; else framework defaults:
-  | framework | build | start | output |
-  |---|---|---|---|
-  | nextjs | `<pm> run build` | `<pm> start` | `.next` |
-  | react (vite) / vue / angular | `<pm> run build` | — | `dist` (CRA: `build`) |
-  | express / fastify / node | — or `<pm> run build` if script | `<pm> start` / `node <main>` | — |
-  | nestjs | `<pm> run build` | `node dist/main` | — |
-  | fastapi | `pip install -r requirements.txt` | `uvicorn main:app --host 0.0.0.0 --port $PORT` | — |
-  | django / flask | same install | `gunicorn <module>.wsgi` / `gunicorn app:app` | — |
-- Small detection gap to close while here (`detection.service.ts`): recognise `vite` and
-  `react-scripts` so the output dir is right, and pass `package.json` scripts/engines through.
+- `kind` ← `role` (`frontend` / `backend`; `unknown` is shown for the user to pick)
+- `rootDir` ← `path`, `nodeVersion` ← `runtimeVersion`, the commands and `outputDir` as detected
+- `name` ← the last segment of `path`, or the repo name for the root
+
+The configure screen (step 7) is where the user overrides any of it.
 
 ### 4. Component service + validation
 - `backend/lib/components/component-input.ts` — hand-written validators in the style of
@@ -111,8 +99,9 @@ Add `deployComponents Component[]` to `Project`. Run `npx prisma migrate dev --n
   relative, no `..`, no leading `/`; `provider` must equal `PROVIDER_FOR_KIND[kind]` in the MVP;
   at most one `database` component; command strings ≤ 500 chars, single line.
 - `backend/lib/components/components.service.ts` (class, added to `Runtime`):
-  - `fromAnalysis(userId, projectId)` → maps current `ProjectComponent` rows through
-    `deriveBuildSettings` into **proposed** components (not saved) for the UI to edit.
+  - `fromAnalysis(userId, projectId)` → maps the latest `Analysis` snapshot's `ProjectComponent` rows
+    (step 3) into **proposed** components (not saved) for the UI to edit; when its `database` hint
+    has `suggestNeon`, proposes a `database` component too.
   - `list`, `replaceAll(userId, projectId, inputs)` (transaction; upsert on
     `(projectId, kind, rootDir)` so existing `providerResourceId`/`url` survive, delete the rest),
     `update`, `remove`. Ownership via the same "404 for not-yours" rule as
@@ -139,7 +128,7 @@ Add `deployComponents Component[]` to `Project`. Run `npx prisma migrate dev --n
 | `PATCH/DELETE /api/projects/:id/components/:cid` | edit / remove one |
 | `GET  /api/projects/:id/preflight` | pre-flight result |
 
-Also switch `analyze`/`analysis` routes to `requireUser` + `toErrorResponse` for consistency.
+The `analyze`/`analysis` routes already use `requireUser` + `toErrorResponse` (Phase 4).
 
 ### 7. Frontend — real-backend pages under `/deploy`
 - `frontend/lib/deploy/types.ts` + `client.ts`: `DeployComponent`, `PreflightResult`, and
@@ -162,15 +151,13 @@ Also switch `analyze`/`analysis` routes to `requireUser` + `toErrorResponse` for
 
 ## Out of scope (belongs to later phases)
 Provider API calls and `ProviderCredential` storage (6–8), encrypted per-component env vars (9),
-DB-usage auto-detection → Neon suggestion (Phase 4 leftover), Dockerfile generation (post-MVP
-`local-docker`).
+Dockerfile generation (post-MVP `local-docker`).
 
 ## Verification
 1. `cd backend && npx prisma migrate dev` applies cleanly; `npm run typecheck && npm run lint && npm test`.
-2. New vitest suites: `build-settings.test.ts` (fixture package.json/lockfile combos per framework),
-   `component-input.test.ts` (provider/kind rule, `..` rejection, unknown keys),
+2. New vitest suites: `component-input.test.ts` (provider/kind rule, `..` rejection, unknown keys),
    `preflight.test.ts` (fake tree/fetcher), `components.service.test.ts` (replaceAll keeps
-   `providerResourceId`), updated `analysis.service.test.ts` (installation token, project branch).
+   `providerResourceId`, proposal built from the latest snapshot).
 3. Manual, with backend + frontend running and a test repo containing `frontend/` (Next.js) and
    `backend/` (Express/Nest):
    - `/deploy/new` → connect → lands on Configure with two cards: frontend→Vercel (`frontend`,

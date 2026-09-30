@@ -1,14 +1,11 @@
-import { createGunzip } from "node:zlib";
-import { mkdir } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { pipeline } from "node:stream/promises";
 import type { Deployment, PrismaClient, Project } from "@prisma/client";
-import * as tar from "tar";
 import { removeDir } from "@/lib/common/fs-utils";
 import { CommandAbortedError, CommandFailedError, run } from "@/lib/common/spawn";
 import { MANAGED_LABEL, type DockerService } from "@/lib/docker/docker.service";
 import type { EventsService } from "@/lib/events/events.service";
 import type { GithubAppService } from "@/lib/github/github-app.service";
+import { downloadSource } from "@/lib/github/source-archive";
 import {
   resolveDataDir,
   type DeploymentLogsService,
@@ -166,7 +163,6 @@ export class DeployExecutor {
     writer.section("Fetching source");
 
     const ref = deployment.commitSha ?? deployment.branch;
-    await mkdir(workDir, { recursive: true });
 
     const repo = {
       owner: project.owner!,
@@ -182,9 +178,7 @@ export class DeployExecutor {
     const token = await this.github.getInstallationToken(installationId);
     writer.addSecret(token);
 
-    const tarball = await this.github.openSourceTarball(repo, ref, installationId);
-    // strip: 1 removes GitHub's "<owner>-<repo>-<sha>/" wrapper directory.
-    await pipeline(tarball, createGunzip(), tar.extract({ cwd: workDir, strip: 1 }));
+    await downloadSource(this.github, repo, ref, installationId, workDir);
     writer.write(`Source for ${repo.fullName}@${ref.slice(0, 12)} extracted.`);
 
     // ------------------------------------------------------------- build ----

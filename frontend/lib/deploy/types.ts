@@ -60,6 +60,61 @@ export type CreateDeployProjectInput = {
   envVars?: Record<string, string>;
 };
 
+export type ComponentRole = "frontend" | "backend" | "unknown";
+
+/** One deployable app the repository analysis found, with the commands it proposes. */
+export type AnalysisComponent = {
+  id: string;
+  type: string;
+  role: ComponentRole | null;
+  framework: string | null;
+  language: string | null;
+  /** Folder within the repository; "." is the root. */
+  path: string | null;
+  packageManager: string | null;
+  detectedVersion: string | null;
+  /** 0..1 */
+  confidence: number | null;
+  installCmd: string | null;
+  buildCmd: string | null;
+  startCmd: string | null;
+  outputDir: string | null;
+  runtimeVersion: string | null;
+  /** Which files and dependencies triggered the detection. */
+  evidence: string[];
+};
+
+export type AnalysisWarning = {
+  code: string;
+  message: string;
+  path?: string;
+};
+
+export type DatabaseHint = {
+  detected: boolean;
+  engine: "postgres" | "mysql" | "mongodb" | "sqlite" | "unknown";
+  evidence: string[];
+  suggestNeon: boolean;
+};
+
+/** The latest analysis snapshot. `analysisId` is null until one has succeeded. */
+export type ProjectAnalysis = {
+  projectId: string;
+  projectName: string;
+  repository: string;
+  analysisId: string | null;
+  branch: string | null;
+  commitSha: string | null;
+  source: "tree" | "tarball" | null;
+  /** ISO timestamp, or "" when there is no analysis yet. */
+  analyzedAt: string;
+  /** True when the commit had already been analysed and that snapshot was returned. */
+  reused: boolean;
+  warnings: AnalysisWarning[];
+  database: DatabaseHint | null;
+  components: AnalysisComponent[];
+};
+
 export const isFinished = (status: DeploymentStatus) =>
   status === "success" || status === "failed" || status === "cancelled";
 

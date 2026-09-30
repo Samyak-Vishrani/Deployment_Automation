@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { createDeployProject } from "@/lib/deploy/client";
+import { analyzeProject, createDeployProject } from "@/lib/deploy/client";
+import { logAnalysis } from "@/lib/deploy/log-analysis";
 
 /** Matches https://github.com/owner/repository (protocol, www and .git optional). */
 const GITHUB_REPO_URL =
@@ -43,6 +44,7 @@ export default function NewDeployProjectPage() {
   const [envText, setEnvText] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -66,6 +68,15 @@ export default function NewDeployProjectPage() {
         ...(watchPaths.trim() && { watchPaths: lines(watchPaths) }),
         ...(envText.trim() && { envVars: parseEnv(envText) }),
       });
+      // Analyse straight away so the project page opens with its components.
+      // A failure here is not a failed connect: the project exists, and the
+      // project page offers the analysis again with the error in view.
+      setAnalyzing(true);
+      console.log(`[analysis] project ${project.id} created; analysing ${project.repoFullName}…`);
+      const startedAt = performance.now();
+      await analyzeProject(project.id)
+        .then((result) => logAnalysis("first analysis after connect", result, startedAt))
+        .catch((e) => console.error("[analysis] first analysis failed:", e));
       router.push(`/deploy/${project.id}`);
     } catch (e) {
       setError((e as Error).message);
@@ -195,7 +206,7 @@ export default function NewDeployProjectPage() {
               Cancel
             </Link>
             <button type="submit" className="button button-primary" disabled={saving}>
-              {saving ? "Connecting…" : "Connect repository"}
+              {analyzing ? "Analysing repository…" : saving ? "Connecting…" : "Connect repository"}
             </button>
           </div>
         </div>

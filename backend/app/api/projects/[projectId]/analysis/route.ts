@@ -1,39 +1,22 @@
 import { NextResponse } from "next/server";
-import { getAuthUser } from "@/lib/auth/require-auth";
-import { getProjectAnalysis, AnalysisError } from "@/lib/analysis/analysis.service";
+import { toErrorResponse } from "@/lib/api/http-error";
+import { requireUser } from "@/lib/auth/current-user";
+import { services } from "@/lib/runtime";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type RouteContext = {
   params: Promise<{ projectId: string }>;
 };
 
-export async function GET(_request: Request, context: RouteContext) {
-  const user = await getAuthUser();
-  if (!user) {
-    return NextResponse.json(
-      { error: "unauthorized", message: "Authentication required." },
-      { status: 401 },
-    );
-  }
-
-  const { projectId } = await context.params;
-
+/** The latest successful analysis, or an empty result if there is none yet. */
+export async function GET(_request: Request, context: RouteContext): Promise<NextResponse> {
   try {
-    const result = await getProjectAnalysis(projectId, user.id);
-    return NextResponse.json(result);
+    const user = await requireUser();
+    const { projectId } = await context.params;
+    return NextResponse.json(await services().analysis.getLatest(user.id, projectId));
   } catch (error) {
-    if (error instanceof AnalysisError) {
-      return NextResponse.json(
-        { error: error.code, message: error.message },
-        { status: error.httpStatus },
-      );
-    }
-
-    console.error("Unexpected analysis retrieval error:", error);
-    return NextResponse.json(
-      { error: "internal_server_error", message: "An unexpected error occurred." },
-      { status: 500 },
-    );
+    return toErrorResponse(error);
   }
 }

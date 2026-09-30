@@ -28,15 +28,17 @@ backend/
     projects/                   CRUD, manual deploy, rollback, deployment history
     deployments/[id]/           detail, cancel, log text, live log stream (SSE)
     events/                     app-wide change feed (SSE)
-    projects/[id]/analyze       repository analysis  ← phase 4
+    projects/[id]/analyze       run the repository analysis  ← phase 4
+    projects/[id]/analysis      latest analysis snapshot  ← phase 4
   lib/
-    github/github-app.service   App JWT → installation token, repo metadata, source tarball
-    github/github.service       tree + file reads with a user token  ← phase 4
+    github/github-app.service   App JWT → installation token, repo metadata, branch SHA, source tarball
+    github/github.service       tree + file reads at a commit SHA  ← phase 4
+    github/source-archive       tarball download + extract, shared by deploys and analysis
     webhooks/                   signature, delivery-store
     deployments/                push filter, queue, executor, log writer
     docker/                     container lifecycle
     projects/                   port allocator, validation
-    analysis/                   framework detection  ← phase 4
+    analysis/                   framework detection, build settings, database hints  ← phase 4
     runtime.ts                  process-wide service graph + startup reconciliation
 ```
 
@@ -90,7 +92,7 @@ committed.
 ## Tests
 
 ```bash
-cd backend  && npm test        # 59 unit tests (analysis, detection, push filter, GitHub config)
+cd backend  && npm test        # 174 unit tests (analysis, detection, build settings, push filter, GitHub)
 cd backend  && npm run test:e2e  # drives the real webhook route against a running backend
 cd frontend && npm test
 ```

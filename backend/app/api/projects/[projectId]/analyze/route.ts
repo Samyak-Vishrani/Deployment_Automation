@@ -1,39 +1,28 @@
 import { NextResponse } from "next/server";
-import { getAuthUser } from "@/lib/auth/require-auth";
-import { analyzeProject, AnalysisError } from "@/lib/analysis/analysis.service";
+import { toErrorResponse } from "@/lib/api/http-error";
+import { requireUser } from "@/lib/auth/current-user";
+import { services } from "@/lib/runtime";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type RouteContext = {
   params: Promise<{ projectId: string }>;
 };
 
-export async function POST(_request: Request, context: RouteContext) {
-  const user = await getAuthUser();
-  if (!user) {
-    return NextResponse.json(
-      { error: "unauthorized", message: "Authentication required." },
-      { status: 401 },
-    );
-  }
-
-  const { projectId } = await context.params;
-
+/**
+ * Analyses the project's branch at its current commit.
+ *
+ * Re-analysing a commit that already has a snapshot returns that snapshot;
+ * `?force=1` runs it again regardless.
+ */
+export async function POST(request: Request, context: RouteContext): Promise<NextResponse> {
   try {
-    const result = await analyzeProject(projectId, user.id);
-    return NextResponse.json(result);
+    const user = await requireUser();
+    const { projectId } = await context.params;
+    const force = ["1", "true"].includes(new URL(request.url).searchParams.get("force") ?? "");
+    return NextResponse.json(await services().analysis.analyze(user.id, projectId, { force }));
   } catch (error) {
-    if (error instanceof AnalysisError) {
-      return NextResponse.json(
-        { error: error.code, message: error.message },
-        { status: error.httpStatus },
-      );
-    }
-
-    console.error("Unexpected analysis error:", error);
-    return NextResponse.json(
-      { error: "internal_server_error", message: "An unexpected error occurred." },
-      { status: 500 },
-    );
+    return toErrorResponse(error);
   }
 }

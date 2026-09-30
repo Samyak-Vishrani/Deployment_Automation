@@ -1,6 +1,11 @@
 import { api } from "@/lib/api";
 import { getApiBaseUrl } from "@/lib/api/config";
-import type { CreateDeployProjectInput, DeployProject, DeployRun } from "./types";
+import type {
+  CreateDeployProjectInput,
+  DeployProject,
+  DeployRun,
+  ProjectAnalysis,
+} from "./types";
 
 /**
  * The session cookie is httpOnly and set by the backend on a different origin
@@ -35,6 +40,13 @@ export const getDeployRun = (id: string) =>
 
 export const cancelDeployRun = (id: string) =>
   api.post<{ status: string }>(`/api/deployments/${id}/cancel`, undefined, withSession);
+
+/** Analyses the project's branch at its current commit; an unchanged commit returns its snapshot. */
+export const analyzeProject = (id: string) =>
+  api.post<ProjectAnalysis>(`/api/projects/${id}/analyze`, undefined, withSession);
+
+export const getProjectAnalysis = (id: string) =>
+  api.get<ProjectAnalysis>(`/api/projects/${id}/analysis`, withSession);
 
 /** Absolute URL for an EventSource, which cannot use the api client's fetch. */
 export function streamUrl(path: string): string {

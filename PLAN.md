@@ -19,7 +19,7 @@ Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not star
 | 1 | Foundation | 🟡 | Next.js + NestJS + Prisma + Postgres running; still needs the monorepo layout, `/api` prefix and placeholder pages |
 | 2 | Authentication | 🟡 | — |
 | 3 | GitHub integration | 🟡 | GitHub App JWT → installation token, repo metadata, branch check, webhook HMAC + dedupe |
-| 4 | Repository analysis | 🟡 | Source fetch (tarball → extract) done; detection still to do |
+| 4 | Repository analysis | ✅ | Source fetch (tarball → extract); detection, build settings, DB hints and snapshots added on top |
 | 5 | Deployment configuration | 🟡 | — |
 | 6 | Vercel integration | ⬜ | Queue and status model can be reused |
 | 7 | Render integration | ⬜ | — |
@@ -142,27 +142,44 @@ To do:
 
 ---
 
-## Phase 4 — Repository Analysis 🟡
+## Phase 4 — Repository Analysis ✅
 
 **Goal:** find the frontend and backend folders and their frameworks.
 
 - ✅ Source fetch without `git clone`: tarball at an exact SHA, token in a header only —
-  `GithubService.openSourceTarball`, extraction in `deployments/deploy-executor.service.ts`
+  `GithubAppService.openSourceTarball`, extraction in `github/source-archive.ts` (shared by the
+  deploy executor and the analysis)
 - ✅ Windows-safe temp workspace cleanup — `common/fs-utils.ts`
 - ✅ Faster first pass: read the tree with `GET /repos/{o}/{r}/git/trees/{sha}?recursive=1` plus a
-  handful of file reads (`package.json`, …), with no download. Fall back to the tarball only when needed.
-- 🟡 `repository/detectors/` — pure functions, unit-tested with fixture trees:
-  - Node: read `package.json` dependencies → `next`, `vite`, `react-scripts`, `@nestjs/core`, `express`, `fastify`
-  - Config files: `next.config.*`, `vite.config.*`, `nest-cli.json`
-  - Python: `requirements.txt` / `pyproject.toml` → `fastapi`, `django`, `flask`
-  - `Dockerfile` present → "docker" runtime hint
-  - Output per folder: `{ path, framework, role: frontend|backend|unknown, buildCmd, startCmd, outputDir, nodeVersion, confidence }`
-- 🟡 Monorepo handling: scan the root plus first- and second-level folders, and workspace globs
-- ⬜ Detect DB usage (`prisma`, `pg`, `typeorm`, `DATABASE_URL` in `.env.example`) → suggest Neon
-- 🟡 `POST /api/repositories/:owner/:repo/analyze` → persist an `Analysis` snapshot (at a commit SHA)
-- ⬜ UI: analysis result with editable path, framework and commands per component
+  handful of file reads (`package.json`, …), with no download. Falls back to the tarball when the
+  tree comes back truncated. Authenticates with the GitHub App installation token and pins every
+  read to the branch's head SHA — `analysis/analysis.service.ts`
+- ✅ `analysis/detection.service.ts` + `analysis/build-settings.ts` — pure functions, unit-tested
+  with fixture trees:
+  - Node: `package.json` dependencies → `next`, `nuxt`, `@sveltejs/kit`, `astro`, `@angular/core`,
+    `@nestjs/core`, `react` (+ `vite` / `react-scripts`), `vue`, `vite`, `express`, `fastify`,
+    `hono`, `koa`; package manager from the nearest lockfile; Node version from `engines` / `.nvmrc`
+  - Config files: `next.config.*`, `vite.config.*`, `nest-cli.json`, `angular.json`
+  - Python: `requirements.txt` / `pyproject.toml` / `Pipfile` → `fastapi`, `django`, `flask`
+  - Go, plus low-confidence Rust, Spring, Rails and Laravel
+  - `Dockerfile` (and `Dockerfile.*`) → a "docker" component on its own, a runtime hint beside an app
+  - Output per folder: `{ path, framework, role: frontend|backend|unknown, installCmd, buildCmd,
+    startCmd, outputDir, runtimeVersion, confidence, evidence }`
+- ✅ Monorepo handling: any depth, minus dependency/build/test/example/docs folders; `package.json`
+  `workspaces` and `pnpm-workspace.yaml` globs limit the Node candidates; at most 60 file reads, 6
+  at a time, and an unreadable file is a warning rather than a failed run
+- ✅ Detect DB usage (`prisma`, `pg`, `typeorm`, `DATABASE_URL` in `.env.example`, …) → suggest
+  Neon for Postgres / unknown SQL, never for MongoDB — `analysis/database-hints.ts`
+- ✅ `POST /api/projects/:projectId/analyze` → persists an `Analysis` snapshot at a commit SHA
+  (last 5 kept; the same SHA returns the existing snapshot unless `?force=1`);
+  `GET /api/projects/:projectId/analysis` returns the latest
+- ✅ UI: read-only analysis result on the project page (`components/AnalysisPanel.tsx`) — path,
+  role, framework, commands, confidence, database suggestion, warnings. Editing path, framework
+  and commands is the Phase 5 configure screen, so user edits are stored apart from the
+  re-generated analysis.
 
-**Done when:** a repo with `frontend/` (Next.js) + `backend/` (NestJS) is detected correctly, and the user can override it.
+**Done when:** a repo with `frontend/` (Next.js) + `backend/` (NestJS) is detected correctly. ✅
+Overriding the result is delivered by Phase 5.
 
 ---
 

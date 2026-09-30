@@ -37,10 +37,10 @@ interface GithubApiResponse<T> {
  * GitHub App authentication and the handful of API calls the deploy pipeline
  * makes.
  *
- * Distinct from github.service.ts, which reads repository trees and file
- * contents with a *user's* OAuth token for the analysis phase. This one
- * authenticates as the App installation, which is what lets a webhook-triggered
- * deployment fetch source with no user present.
+ * Distinct from github.service.ts, which holds the token-agnostic tree and
+ * file-content reads the analysis phase uses. This one authenticates as the App
+ * installation, which is what lets a webhook-triggered deployment - and the
+ * analysis - reach a repository with no user token stored anywhere.
  *
  * There is deliberately no webhook management here. A GitHub App has a single
  * webhook URL, configured on the App itself, which already receives events for
@@ -247,6 +247,41 @@ export class GithubAppService {
       { authorization: `Bearer ${token}` },
     );
     return response.status === 200;
+  }
+
+  /**
+   * The commit a branch currently points at.
+   *
+   * The analysis pins every read to this SHA: a branch name can move between
+   * the tree request and the file reads, a SHA cannot.
+   */
+  async getBranchHeadSha(
+    repo: ParsedRepo,
+    branch: string,
+    installationId?: string,
+  ): Promise<string> {
+    const id = installationId ?? (await this.resolveInstallationId(repo));
+    const token = await this.getInstallationToken(id);
+    const response = await this.request<{ commit?: { sha?: string } }>(
+      "GET",
+      `/repos/${repo.owner}/${repo.repo}/branches/${encodeURIComponent(branch)}`,
+      { authorization: `Bearer ${token}` },
+    );
+
+    if (response.status === 404) {
+      throw new GithubError(
+        `Branch "${branch}" does not exist on ${repo.fullName}, or the GitHub App installation cannot access the repository.`,
+        404,
+      );
+    }
+    if (response.status !== 200 || !response.body.commit?.sha) {
+      throw new GithubError(
+        `GitHub API error while reading branch "${branch}" of ${repo.fullName}: ${this.describe(response)}`,
+        502,
+      );
+    }
+
+    return response.body.commit.sha;
   }
 
   // -------------------------------------------------------------- source ----
