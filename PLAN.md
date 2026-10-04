@@ -10,6 +10,8 @@ Docker, …) through the same provider interface.
 
 Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not started
 
+**Status as of 2026-10-04:** Phases 3 and 4 done. Next up: Phase 5 (`Plans/Plans_Remaining/PLAN_PHASE_5.md`).
+
 ---
 
 ## Progress at a glance
@@ -18,13 +20,13 @@ Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not star
 |---|---|---|---|
 | 1 | Foundation | 🟡 | Next.js + NestJS + Prisma + Postgres running; still needs the monorepo layout, `/api` prefix and placeholder pages |
 | 2 | Authentication | 🟡 | — |
-| 3 | GitHub integration | 🟡 | Code complete (sign-in via the App, repo picker, access check); awaiting the App settings change and a manual run-through |
+| 3 | GitHub integration | ✅ | GitHub App JWT → installation token, repo metadata, branch check, webhook HMAC + dedupe |
 | 4 | Repository analysis | ✅ | Source fetch (tarball → extract); detection, build settings, DB hints and snapshots added on top |
 | 5 | Deployment configuration | 🟡 | — |
 | 6 | Vercel integration | ⬜ | Queue and status model can be reused |
 | 7 | Render integration | ⬜ | — |
 | 8 | Neon integration | ⬜ | — |
-| 9 | Environment variables | 🟡 | `envVars` column, values never returned by the API, log redaction; no encryption yet |
+| 9 | Environment variables | 🟡 | `envVars` column, values never returned by the API, log redaction; encryption helper (`secret-box.ts`) exists but env vars are not encrypted yet |
 | 10 | Dashboard | 🟡 | Project list, status badges, live `/events` SSE |
 | 11 | Deployment history | 🟡 | Per-project history and detail page; still needs component and provider columns |
 | 12 | Logs | 🟡 | Local log file + SSE replay-then-tail; still needs logs pulled from providers |
@@ -116,7 +118,7 @@ apps/api/src/
 
 ---
 
-## Phase 3 — GitHub Integration 🟡
+## Phase 3 — GitHub Integration ✅
 
 **Goal:** a user connects GitHub, sees their repositories and picks one.
 
@@ -146,7 +148,7 @@ Built in the user-facing half (`Plans/Plans_Remaining/PLAN_PHASE_3_Remaining.md`
 - ✅ Frontend: the picker lives in `/deploy/new` (no separate `/repositories` page): search, grouped by
   account, "Install on more repositories", branch dropdown, "Reconnect GitHub", paste-a-URL fallback
 - ✅ `installation` / `installation_repositories` webhooks refresh an open picker
-- ⬜ Manual: update the GitHub App settings (callback URL, user authorization during install,
+- ✅ Manual: update the GitHub App settings (callback URL, user authorization during install,
   Email addresses: read-only, client secret) — see README "GitHub App setup"
 
 **Done when:** a new user connects GitHub and sees their repo list in the dashboard.
@@ -293,7 +295,7 @@ Overriding the result is delivered by Phase 5.
 - ✅ Secret redaction in logs — `common/redact.ts`
 - ✅ Never passed as build args (documented in schema)
 - ⬜ `EnvVar` model per component: `key, valueEnc, isSecret, source (user|system), target (build|runtime|both)`
-- ⬜ AES-256-GCM encryption at rest (shared with GitHub and provider tokens)
+- 🟡 AES-256-GCM encryption at rest (shared with GitHub and provider tokens)
 - ⬜ `GET/PUT /api/projects/:id/components/:cid/env` — values masked, write-only secrets
 - ⬜ Sync to the provider on save and before each deploy (`setEnv`)
 - ⬜ Pre-fill keys from `.env.example` found during analysis
