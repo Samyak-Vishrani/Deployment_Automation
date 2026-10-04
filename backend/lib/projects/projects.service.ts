@@ -3,6 +3,7 @@ import { badRequest, conflict, notFound } from "@/lib/api/http-error";
 import type { DockerService } from "@/lib/docker/docker.service";
 import type { EventsService } from "@/lib/events/events.service";
 import type { GithubAppService } from "@/lib/github/github-app.service";
+import type { GithubUserService } from "@/lib/github/github-user.service";
 import { InvalidRepoUrlError, parseRepoUrl } from "@/lib/github/repo-url";
 import type { CreateProjectInput, UpdateProjectInput } from "./project-input";
 import { createWithAllocatedPort, readPortRange } from "./port-allocator";
@@ -21,6 +22,7 @@ export class ProjectsService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly github: GithubAppService,
+    private readonly githubUser: GithubUserService,
     private readonly docker: DockerService,
     private readonly events: EventsService,
   ) {}
@@ -42,6 +44,15 @@ export class ProjectsService {
         throw badRequest(error.message);
       }
       throw error;
+    }
+
+    // The App seeing a repository says nothing about whether THIS user may:
+    // without this check, anyone signed in could connect - and then read
+    // through analysis and deploys - a private repository the App happens to
+    // be installed on for someone else. Answered with the "not installed"
+    // text, so the response never confirms that a private repository exists.
+    if (!(await this.githubUser.canAccess(userId, repo))) {
+      throw this.github.notInstalled(repo);
     }
 
     // Resolves the numeric repo id, which is what pushes are matched on, and
@@ -119,6 +130,16 @@ export class ProjectsService {
       orderBy: { createdAt: "desc" },
     });
     return projects.map((p) => this.toView(p));
+  }
+
+  /** GitHub repo id -> this user's project for it, so the picker can mark connected repositories. */
+  async projectIdsByRepoId(userId: string): Promise<Map<number, string>> {
+    const projects = await this.prisma.project.findMany({
+      where: { userId, repoId: { not: null } },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, repoId: true },
+    });
+    return new Map(projects.map((p) => [p.repoId as number, p.id]));
   }
 
   async findOne(userId: string, id: string): Promise<ProjectView> {

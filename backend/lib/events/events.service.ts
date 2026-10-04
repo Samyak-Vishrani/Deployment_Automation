@@ -2,7 +2,9 @@ import { EventEmitter } from "node:events";
 
 export type AppEvent =
   | { kind: "deployment"; projectId: string; deploymentId: string; status: string }
-  | { kind: "project"; projectId: string; action: "created" | "updated" | "deleted" };
+  | { kind: "project"; projectId: string; action: "created" | "updated" | "deleted" }
+  /** An App installation or its repository selection changed; repository lists refetch. */
+  | { kind: "github"; action: string };
 
 const CHANNEL = "app-event";
 

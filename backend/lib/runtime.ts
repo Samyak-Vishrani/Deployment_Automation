@@ -7,6 +7,7 @@ import { DeploymentsService } from "@/lib/deployments/deployments.service";
 import { DockerService } from "@/lib/docker/docker.service";
 import { EventsService } from "@/lib/events/events.service";
 import { GithubAppService } from "@/lib/github/github-app.service";
+import { GithubUserService } from "@/lib/github/github-user.service";
 import { ProjectsService } from "@/lib/projects/projects.service";
 import { DeliveryStore } from "@/lib/webhooks/delivery-store";
 
@@ -24,6 +25,7 @@ import { DeliveryStore } from "@/lib/webhooks/delivery-store";
 export interface Runtime {
   events: EventsService;
   github: GithubAppService;
+  githubUser: GithubUserService;
   docker: DockerService;
   queue: DeploymentQueue;
   logs: DeploymentLogsService;
@@ -40,13 +42,14 @@ const globalForRuntime = globalThis as unknown as { __orbitopsRuntime?: Runtime 
 function build(): Runtime {
   const events = new EventsService();
   const github = new GithubAppService();
+  const githubUser = new GithubUserService(prisma);
   const docker = new DockerService();
   const queue = new DeploymentQueue();
   const logs = new DeploymentLogsService();
   const deliveries = new DeliveryStore();
 
   const deployments = new DeploymentsService(prisma, queue, events);
-  const projects = new ProjectsService(prisma, github, docker, events);
+  const projects = new ProjectsService(prisma, github, githubUser, docker, events);
   const analysis = new AnalysisService(prisma, github);
   const executor = new DeployExecutor(prisma, github, docker, logs, events);
 
@@ -57,6 +60,7 @@ function build(): Runtime {
   return {
     events,
     github,
+    githubUser,
     docker,
     queue,
     logs,

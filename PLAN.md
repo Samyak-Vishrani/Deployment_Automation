@@ -18,7 +18,7 @@ Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not star
 |---|---|---|---|
 | 1 | Foundation | 🟡 | Next.js + NestJS + Prisma + Postgres running; still needs the monorepo layout, `/api` prefix and placeholder pages |
 | 2 | Authentication | 🟡 | — |
-| 3 | GitHub integration | 🟡 | GitHub App JWT → installation token, repo metadata, branch check, webhook HMAC + dedupe |
+| 3 | GitHub integration | 🟡 | Code complete (sign-in via the App, repo picker, access check); awaiting the App settings change and a manual run-through |
 | 4 | Repository analysis | ✅ | Source fetch (tarball → extract); detection, build settings, DB hints and snapshots added on top |
 | 5 | Deployment configuration | 🟡 | — |
 | 6 | Vercel integration | ⬜ | Queue and status model can be reused |
@@ -128,15 +128,26 @@ Already built (GitHub **App**, installation-scoped):
 - ✅ Webhook HMAC verification (constant-time) + delivery dedupe — `webhooks/`
 - ✅ Private-key newline normalisation fix (`f868fff`)
 
-To do:
-- ⬜ **Connect GitHub** flow: use the App's *user-to-server* OAuth ("Request user authorization during
-  installation") so one App covers both identity and repo access, with no separate OAuth App
-  - `GET /api/github/connect` → redirect; `GET /api/github/callback` → exchange the code, store the connection
-- 🟡 `GithubAccount` model: `id, userId, githubUserId, login, accessTokenEnc, refreshTokenEnc, expiresAt, createdAt`
-  — tokens encrypted with AES-256-GCM (shared `crypto/secret-box.ts`, key from `ENCRYPTION_KEY`)
-- ⬜ `GET /api/repositories` → the user's installations and their repos (`/user/installations/{id}/repositories`)
-- ⬜ `GET /api/repositories/:owner/:repo/branches`
-- ⬜ Frontend `/repositories`: list, search, "Install on more repos" link (`installUrl` already exists), select → branch
+Built in the user-facing half (`Plans/Plans_Remaining/PLAN_PHASE_3_Remaining.md`):
+- ✅ **Connect GitHub** flow: sign-in uses the GitHub App's own client id/secret with "Request user
+  authorization during installation", so one App covers both identity and repo access
+  - The existing `GET /api/auth/github` + `/callback` *is* the connect flow; no separate
+    `/api/github/connect` routes. An install redirect (`setup_action`, no state of ours) is never
+    exchanged; it restarts sign-in with `next=/deploy/new`
+- ✅ Tokens stored on the existing `GitHubConnection` (not a new `GithubAccount` model): `accessTokenEnc`,
+  `refreshTokenEnc`, `accessTokenExpiresAt`, `refreshTokenExpiresAt`, sealed with `crypto/secret-box.ts`
+  (key from `ENCRYPTION_KEY`); refreshed one-at-a-time per user; cleared on sign-out and on
+  `github_app_authorization.revoked`
+- ✅ `GET /api/repositories` → installations and their repos, read live with the user's token
+  (`/user/installations/{id}/repositories`, 5 pages per installation, then `truncated`)
+- ✅ `GET /api/repositories/:owner/:repo/branches`
+- ✅ `POST /api/projects` checks the *user* can read the repo before the App reads it (closes
+  cross-user connects of private repos)
+- ✅ Frontend: the picker lives in `/deploy/new` (no separate `/repositories` page): search, grouped by
+  account, "Install on more repositories", branch dropdown, "Reconnect GitHub", paste-a-URL fallback
+- ✅ `installation` / `installation_repositories` webhooks refresh an open picker
+- ⬜ Manual: update the GitHub App settings (callback URL, user authorization during install,
+  Email addresses: read-only, client secret) — see README "GitHub App setup"
 
 **Done when:** a new user connects GitHub and sees their repo list in the dashboard.
 
@@ -343,7 +354,7 @@ Overriding the result is delivered by Phase 5.
 
 ## Cross-cutting
 
-- ⬜ `crypto/secret-box.ts` (AES-256-GCM, versioned key id) used by GitHub tokens, provider tokens and env vars
+- ✅ `crypto/secret-box.ts` (AES-256-GCM, versioned key id) — used by GitHub tokens today; provider tokens and env vars next
 - ⬜ Provider HTTP client: retries with backoff on 429/5xx, and error mapping to user-facing messages (same style as `GithubError`)
 - ⬜ Idempotency: `ensureResource` looks up before it creates; store provider resource ids straight away
 - ⬜ Contract tests per provider against recorded fixtures; one opt-in live smoke test per provider

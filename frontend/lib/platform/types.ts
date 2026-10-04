@@ -12,6 +12,8 @@ export type User = {
   avatarInitials: string;
   avatarUrl?: string | null;
   githubUsername?: string | null;
+  /** The backend holds a usable GitHub token for this user, so their repositories can be listed. */
+  githubConnected?: boolean;
 };
 
 export type Session = {

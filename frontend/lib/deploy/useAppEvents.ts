@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { streamUrl } from "./client";
+import type { AppEvent } from "./types";
 
 /**
  * Subscribes to the backend's app-wide change feed and runs `onChange`
@@ -11,8 +12,11 @@ import { streamUrl } from "./client";
  * refetches rather than trusting a payload - which means a tab that missed
  * events while asleep still converges as soon as it reconnects, and there is
  * only one shape of a project in the codebase.
+ *
+ * The event is passed along so a caller can ignore what it does not care
+ * about; it is null if the message could not be read.
  */
-export function useAppEvents(onChange: () => void): void {
+export function useAppEvents(onChange: (event: AppEvent | null) => void): void {
   // Kept in a ref so a caller passing an inline arrow does not tear down and
   // rebuild the EventSource on every render. Assigned in an effect rather than
   // during render: a ref write during render is not safe under concurrent
@@ -27,7 +31,15 @@ export function useAppEvents(onChange: () => void): void {
     // withCredentials, or the httpOnly session cookie never reaches :3001 and
     // the stream is refused with a 401 the browser reports as a bare error.
     const source = new EventSource(streamUrl("/api/events"), { withCredentials: true });
-    source.addEventListener("change", () => handler.current());
+    source.addEventListener("change", (message) => {
+      let event: AppEvent | null = null;
+      try {
+        event = JSON.parse((message as MessageEvent<string>).data) as AppEvent;
+      } catch {
+        // Still a change; let the caller refetch.
+      }
+      handler.current(event);
+    });
     // EventSource reconnects on its own; nothing to do here but avoid noise.
     source.onerror = () => undefined;
     return () => source.close();

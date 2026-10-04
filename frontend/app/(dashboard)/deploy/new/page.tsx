@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
+import { RepositoryPicker } from "@/components/RepositoryPicker";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { analyzeProject, createDeployProject } from "@/lib/deploy/client";
+import { analyzeProject, createDeployProject, listBranches } from "@/lib/deploy/client";
 import { logAnalysis } from "@/lib/deploy/log-analysis";
+import type { BranchList, GithubRepository } from "@/lib/deploy/types";
 
 /** Matches https://github.com/owner/repository (protocol, www and .git optional). */
 const GITHUB_REPO_URL =
@@ -34,6 +36,15 @@ const lines = (text: string) =>
 
 export default function NewDeployProjectPage() {
   const router = useRouter();
+  // "pick" lists the user's repositories; "url" is the fallback for one beyond
+  // the list cap. Both end in the same POST, which checks access server-side.
+  const [mode, setMode] = useState<"pick" | "url">("pick");
+  const [selectedRepo, setSelectedRepo] = useState<GithubRepository | null>(null);
+  const [branchList, setBranchList] = useState<BranchList | null>(null);
+  const [branchError, setBranchError] = useState("");
+  // The repository whose branches are wanted, so a slow answer for an earlier
+  // pick cannot overwrite the list for the current one.
+  const latestPick = useRef<number | null>(null);
   const [repoUrl, setRepoUrl] = useState("");
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -46,10 +57,40 @@ export default function NewDeployProjectPage() {
   const [saving, setSaving] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
 
+  async function selectRepo(repo: GithubRepository) {
+    latestPick.current = repo.id;
+    setSelectedRepo(repo);
+    setBranch(repo.defaultBranch);
+    setBranchList(null);
+    setBranchError("");
+    setError("");
+    try {
+      const list = await listBranches(repo.owner, repo.name);
+      if (latestPick.current === repo.id) {
+        setBranchList(list);
+        setBranch(list.defaultBranch);
+      }
+    } catch (e) {
+      if (latestPick.current === repo.id) {
+        setBranchError((e as Error).message);
+      }
+    }
+  }
+
+  function switchMode(next: "pick" | "url") {
+    setMode(next);
+    setBranch(next === "pick" && selectedRepo ? selectedRepo.defaultBranch : "");
+    setError("");
+  }
+
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
-    const trimmed = repoUrl.trim();
+    const trimmed = mode === "pick" ? (selectedRepo ? `https://github.com/${selectedRepo.fullName}` : "") : repoUrl.trim();
 
+    if (mode === "pick" && !selectedRepo) {
+      setError("Pick a repository to connect.");
+      return;
+    }
     if (!GITHUB_REPO_URL.test(trimmed)) {
       setError("Enter a valid GitHub repository URL, e.g. https://github.com/owner/repository");
       return;
@@ -92,7 +133,7 @@ export default function NewDeployProjectPage() {
       <PageHeader
         eyebrow="Push to deploy"
         title="Connect a repository"
-        description="The GitHub App must already be installed on the repository. Only the URL is required."
+        description="Pick one of your repositories the GitHub App can reach. Only the repository is required."
       />
 
       <form onSubmit={onSubmit} className="panel panel-pad">
@@ -104,16 +145,33 @@ export default function NewDeployProjectPage() {
         ) : null}
 
         <div className="form-grid">
-          <label className="field-label field-full" htmlFor="repoUrl">
-            Repository URL
-            <input
-              id="repoUrl"
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-              placeholder="https://github.com/owner/repository"
-              autoFocus
-            />
-          </label>
+          {mode === "pick" ? (
+            <div className="field-label field-full">
+              <span className="field-label-row">
+                Repository
+                <button type="button" className="text-link" onClick={() => switchMode("url")}>
+                  Paste a URL instead
+                </button>
+              </span>
+              <RepositoryPicker selected={selectedRepo} onSelect={(repo) => void selectRepo(repo)} />
+            </div>
+          ) : (
+            <label className="field-label field-full" htmlFor="repoUrl">
+              <span className="field-label-row">
+                Repository URL
+                <button type="button" className="text-link" onClick={() => switchMode("pick")}>
+                  Pick from your repositories
+                </button>
+              </span>
+              <input
+                id="repoUrl"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                placeholder="https://github.com/owner/repository"
+                autoFocus
+              />
+            </label>
+          )}
 
           <label className="field-label" htmlFor="name">
             Display name
@@ -121,7 +179,7 @@ export default function NewDeployProjectPage() {
               id="name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="defaults to the repo name"
+              placeholder={selectedRepo && mode === "pick" ? selectedRepo.name : "defaults to the repo name"}
             />
           </label>
 
@@ -141,12 +199,32 @@ export default function NewDeployProjectPage() {
 
           <label className="field-label" htmlFor="branch">
             Branch
-            <input
-              id="branch"
-              value={branch}
-              onChange={(e) => setBranch(e.target.value)}
-              placeholder="defaults to the repo default"
-            />
+            {mode === "url" ? (
+              <input
+                id="branch"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                placeholder="defaults to the repo default"
+              />
+            ) : (
+              <select
+                id="branch"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                disabled={!selectedRepo || !branchList}
+              >
+                {!selectedRepo ? <option value="">Pick a repository first</option> : null}
+                {selectedRepo && !branchList ? <option value={branch}>{branch || "Loading…"}</option> : null}
+                {branchList?.branches.map((entry) => (
+                  <option key={entry.name} value={entry.name}>
+                    {entry.name}
+                    {entry.name === branchList.defaultBranch ? " (default)" : ""}
+                    {entry.protected ? " · protected" : ""}
+                  </option>
+                ))}
+              </select>
+            )}
+            {branchError ? <p className="field-hint">Could not list branches: {branchError}</p> : null}
           </label>
 
           <label className="field-label" htmlFor="containerPort">

@@ -30,9 +30,13 @@ backend/
     events/                     app-wide change feed (SSE)
     projects/[id]/analyze       run the repository analysis  ← phase 4
     projects/[id]/analysis      latest analysis snapshot  ← phase 4
+    repositories/               the user's repos and branches, read live from GitHub  ← phase 3
+    auth/github/                sign-in through the GitHub App; also where installs land
   lib/
     github/github-app.service   App JWT → installation token, repo metadata, branch SHA, source tarball
     github/github.service       tree + file reads at a commit SHA  ← phase 4
+    github/github-user.service  user-token calls: installations, repos, branches, access check
+    crypto/secret-box           AES-256-GCM for secrets at rest (user GitHub tokens)
     github/source-archive       tarball download + extract, shared by deploys and analysis
     webhooks/                   signature, delivery-store
     deployments/                push filter, queue, executor, log writer
@@ -76,15 +80,24 @@ npm run dev              # :3000
 
 ## GitHub App setup
 
-The push pipeline authenticates as a GitHub App installation, not as a user, so a
-webhook-triggered build can fetch source with nobody signed in.
+One GitHub App does both jobs. The push pipeline authenticates as an *installation*, so a
+webhook-triggered build can fetch source with nobody signed in. Sign-in uses the same App's
+client id, and the user token it returns lists the repositories that user can connect.
 
-1. Create a GitHub App and install it on the repositories you want to deploy.
+1. Create a GitHub App. Users install it from the "Connect a repository" screen.
 2. Set its webhook URL to your public tunnel, ending in `/api/webhooks/github`.
    A VS Code dev tunnel must be set to **public** — a private one answers GitHub with a sign-in
    page, so every delivery fails while still looking like it was accepted.
 3. Copy the app id, slug, webhook secret and private key into `backend/.env`.
    The PEM goes on one line with real newlines written as `\n`.
+4. On the App's settings page:
+   - **Callback URL** → `http://localhost:3001/api/auth/github/callback`
+   - tick **Request user authorization (OAuth) during installation**, so installing also signs in
+   - leave **Expire user authorization tokens** on
+   - **Account permissions → Email addresses: Read-only**, so sign-in gets the verified email
+   - **Generate a new client secret**; put it and the App's client id in
+     `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET`
+5. Set `ENCRYPTION_KEY` (the command is in `.env.example`). It seals the users' GitHub tokens.
 
 The private key is a credential: it is covered by `.gitignore` (`*.pem`, `.env`) and must never be
 committed.
@@ -92,7 +105,7 @@ committed.
 ## Tests
 
 ```bash
-cd backend  && npm test        # 174 unit tests (analysis, detection, build settings, push filter, GitHub)
+cd backend  && npm test        # 224 unit tests (analysis, detection, build settings, push filter, GitHub, auth)
 cd backend  && npm run test:e2e  # drives the real webhook route against a running backend
 cd frontend && npm test
 ```
@@ -108,6 +121,10 @@ Backend (`backend/.env`):
 | --- | --- |
 | `DATABASE_URL` | Postgres, port 5433 to avoid colliding with a local install |
 | `FRONTEND_URL` | CORS origin for the dashboard |
+| `AUTH_SECRET` | signs the session cookie; required in production |
+| `ENCRYPTION_KEY` | 32 bytes, base64; seals stored GitHub tokens; required in production |
+| `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | the GitHub App's own client id and secret, for sign-in |
+| `GITHUB_OAUTH_CALLBACK_URL` | optional; defaults to `http://localhost:3001/api/auth/github/callback` |
 | `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY` / `GITHUB_WEBHOOK_SECRET` / `GITHUB_APP_SLUG` | GitHub App |
 | `GITHUB_INSTALLATION_ID` | optional; pins the installation instead of resolving per repository |
 | `PORT_RANGE_START` / `PORT_RANGE_END` | host ports handed to deployed containers |

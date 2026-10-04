@@ -107,6 +107,55 @@ Errors use the shared `{ "error": code, "message": text }` shape:
 | `502` | `github_api_error` | GitHub answered with an error |
 | `500` | `analysis_failed` | The detection engine itself failed |
 
+## Repositories
+
+Live on the backend (under `/api`). Read with the signed-in user's own GitHub token, so a user only
+ever sees installations and repositories GitHub lets them see.
+
+| Method | Route | Response |
+| --- | --- | --- |
+| `GET` | `/repositories` | `RepositoryList` |
+| `GET` | `/repositories/:owner/:repo/branches` | `{ defaultBranch, branches: [{ name, protected }] }` |
+
+```ts
+type RepositoryList = {
+  installUrl: string;                 // install the App on more repositories
+  installations: Array<{
+    id: string;
+    account: string;                  // user or organisation login
+    accountType: string;              // "User" | "Organization"
+    repositorySelection: "all" | "selected";
+    manageUrl: string;                // GitHub's settings page for the installation
+  }>;
+  repositories: Array<{
+    id: number;                       // GitHub's numeric repo id
+    fullName: string;
+    owner: string;
+    name: string;
+    private: boolean;
+    defaultBranch: string;
+    installationId: string;
+    pushedAt: string | null;
+    projectId: string | null;         // set when this user already connected it
+  }>;
+  truncated: boolean;                 // an installation has more than 500 repositories
+};
+```
+
+`POST /projects` takes the same `repoUrl` as before, and now also checks that the signed-in user can
+read the repository; one they cannot see answers `404` with the "not installed" message, so a
+private repository's existence is never confirmed.
+
+| Status | `error` | When |
+| --- | --- | --- |
+| `401` | `unauthorized` | No session |
+| `409` | `github_reconnect_required` | No usable GitHub token: never stored, expired, or revoked. Send the user through `/api/auth/github?next=…` |
+| `400` | `bad_request` | Invalid owner or repository name |
+| `404` | `not_found` | Branches requested for a repository the user cannot see |
+| `502` | `github_error` | GitHub answered with an error |
+
+`GET /auth/me` adds `user.githubConnected: boolean` — a usable token is stored.
+
 ## Integration notes
 
 - Start with manual pipeline triggers and status polling.

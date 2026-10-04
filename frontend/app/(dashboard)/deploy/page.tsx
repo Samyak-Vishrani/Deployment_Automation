@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -11,6 +12,7 @@ import { useAppEvents } from "@/lib/deploy/useAppEvents";
 import { relativeTime } from "@/lib/format";
 
 export default function DeployProjectsPage() {
+  const router = useRouter();
   const [projects, setProjects] = useState<DeployProject[] | null>(null);
   const [latest, setLatest] = useState<Record<string, DeployRun | undefined>>({});
   const [error, setError] = useState("");
@@ -82,8 +84,8 @@ export default function DeployProjectsPage() {
             </div>
             <h3>No repositories connected</h3>
             <p>
-              Install the GitHub App on a repository, then connect it here to get a build on every
-              push.
+              Pick one of your GitHub repositories to get a build on every push. If the GitHub App
+              is not on it yet, you can install it from the same screen.
             </p>
             <Link className="button button-primary" href="/deploy/new" style={{ marginTop: 18 }}>
               Connect repository <Icon name="arrow-up-right" size={15} />
@@ -105,9 +107,21 @@ export default function DeployProjectsPage() {
               {projects.map((project) => {
                 const last = latest[project.id];
                 return (
-                  <tr key={project.id}>
+                  <tr
+                    key={project.id}
+                    className="row-link"
+                    // The whole row opens the project. Clicks on the links
+                    // inside it (build badge, port) keep their own target.
+                    onClick={(event) => {
+                      if (!(event.target as HTMLElement).closest("a")) {
+                        router.push(`/deploy/${project.id}`);
+                      }
+                    }}
+                  >
                     <td>
-                      <Link href={`/deploy/${project.id}`}>{project.name}</Link>
+                      <Link href={`/deploy/${project.id}`} className="row-link-title">
+                        {project.name}
+                      </Link>
                       {!project.autoDeploy ? (
                         <>
                           <br />

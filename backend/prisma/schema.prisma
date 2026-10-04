@@ -45,13 +45,21 @@ model User {
 }
 
 model GitHubConnection {
-  id             String   @id @default(cuid())
-  userId         String
-  githubUserId   String?  @db.VarChar(255)
-  githubUsername String?  @db.VarChar(255)
-  accessToken    String?  @db.Text
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id                    String    @id @default(cuid())
+  userId                String
+  githubUserId          String?   @db.VarChar(255)
+  githubUsername        String?   @db.VarChar(255)
+  /// The GitHub App user-to-server token pair, sealed with lib/crypto/secret-box
+  /// (`v1.` prefix). Used to ask GitHub which installations and repositories
+  /// this user can see. All four are cleared on sign-out and when the user
+  /// revokes the App's authorisation on GitHub.
+  accessTokenEnc        String?   @db.Text
+  refreshTokenEnc       String?   @db.Text
+  /// NULL when the App does not expire user tokens.
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

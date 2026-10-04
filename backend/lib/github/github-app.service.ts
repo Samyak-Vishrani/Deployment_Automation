@@ -1,20 +1,10 @@
 import { createSign } from "node:crypto";
 import { Readable } from "node:stream";
 import { loadGithubConfig, type GithubConfig } from "./github.config";
+import { describe, GITHUB_API, GithubError, request } from "./http";
 import type { ParsedRepo } from "./repo-url";
 
-const GITHUB_API = "https://api.github.com";
-
-/** An error carrying an HTTP status we are happy to surface to the frontend. */
-export class GithubError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-    this.name = "GithubError";
-  }
-}
+export { GithubError };
 
 /** The repository metadata a project is built from. */
 export interface RepoMetadata {
@@ -26,11 +16,6 @@ export interface RepoMetadata {
   defaultBranch: string;
   private: boolean;
   installationId: string;
-}
-
-interface GithubApiResponse<T> {
-  status: number;
-  body: T;
 }
 
 /**
@@ -68,6 +53,19 @@ export class GithubAppService {
   /** Where a user installs this GitHub App on their repositories. */
   get installUrl(): string {
     return `https://github.com/apps/${this.getConfig().appSlug}/installations/new`;
+  }
+
+  /**
+   * The one answer for "the App cannot reach this repository". Also used when
+   * the signed-in user cannot see it, so a private repository's existence is
+   * never confirmed to someone without access.
+   */
+  notInstalled(repo: ParsedRepo): GithubError {
+    return new GithubError(
+      `The GitHub App is not installed on ${repo.fullName} (or the repository does not exist). ` +
+        `Install it here: ${this.installUrl}`,
+      404,
+    );
   }
 
   // ---------------------------------------------------------------- auth ----
@@ -113,18 +111,14 @@ export class GithubAppService {
     }
 
     const jwt = this.createAppJwt();
-    const response = await this.request<{ id: number }>(
+    const response = await request<{ id: number }>(
       "GET",
       `/repos/${repo.owner}/${repo.repo}/installation`,
       { authorization: `Bearer ${jwt}` },
     );
 
     if (response.status === 404) {
-      throw new GithubError(
-        `The GitHub App is not installed on ${repo.fullName} (or the repository does not exist). ` +
-          `Install it here: ${this.installUrl}`,
-        404,
-      );
+      throw this.notInstalled(repo);
     }
     if (response.status === 401) {
       throw new GithubError(
@@ -134,7 +128,7 @@ export class GithubAppService {
     }
     if (response.status !== 200) {
       throw new GithubError(
-        `GitHub API error while looking up the app installation: ${this.describe(response)}`,
+        `GitHub API error while looking up the app installation: ${describe(response)}`,
         502,
       );
     }
@@ -156,7 +150,7 @@ export class GithubAppService {
     }
 
     const jwt = this.createAppJwt();
-    const response = await this.request<{ token: string; expires_at: string }>(
+    const response = await request<{ token: string; expires_at: string }>(
       "POST",
       `/app/installations/${installationId}/access_tokens`,
       { authorization: `Bearer ${jwt}` },
@@ -177,7 +171,7 @@ export class GithubAppService {
     }
     if (response.status !== 201) {
       throw new GithubError(
-        `GitHub API error while creating an installation token: ${this.describe(response)}`,
+        `GitHub API error while creating an installation token: ${describe(response)}`,
         502,
       );
     }
@@ -201,7 +195,7 @@ export class GithubAppService {
     const installationId = await this.resolveInstallationId(repo);
     const token = await this.getInstallationToken(installationId);
 
-    const response = await this.request<{
+    const response = await request<{
       id: number;
       full_name: string;
       name: string;
@@ -221,7 +215,7 @@ export class GithubAppService {
     }
     if (response.status !== 200) {
       throw new GithubError(
-        `GitHub API error while reading ${repo.fullName}: ${this.describe(response)}`,
+        `GitHub API error while reading ${repo.fullName}: ${describe(response)}`,
         502,
       );
     }
@@ -241,7 +235,7 @@ export class GithubAppService {
   async branchExists(repo: ParsedRepo, branch: string): Promise<boolean> {
     const installationId = await this.resolveInstallationId(repo);
     const token = await this.getInstallationToken(installationId);
-    const response = await this.request<unknown>(
+    const response = await request<unknown>(
       "GET",
       `/repos/${repo.owner}/${repo.repo}/branches/${encodeURIComponent(branch)}`,
       { authorization: `Bearer ${token}` },
@@ -262,7 +256,7 @@ export class GithubAppService {
   ): Promise<string> {
     const id = installationId ?? (await this.resolveInstallationId(repo));
     const token = await this.getInstallationToken(id);
-    const response = await this.request<{ commit?: { sha?: string } }>(
+    const response = await request<{ commit?: { sha?: string } }>(
       "GET",
       `/repos/${repo.owner}/${repo.repo}/branches/${encodeURIComponent(branch)}`,
       { authorization: `Bearer ${token}` },
@@ -276,7 +270,7 @@ export class GithubAppService {
     }
     if (response.status !== 200 || !response.body.commit?.sha) {
       throw new GithubError(
-        `GitHub API error while reading branch "${branch}" of ${repo.fullName}: ${this.describe(response)}`,
+        `GitHub API error while reading branch "${branch}" of ${repo.fullName}: ${describe(response)}`,
         502,
       );
     }
@@ -351,52 +345,5 @@ export class GithubAppService {
     }
 
     return Readable.fromWeb(download.body as never);
-  }
-
-  // ------------------------------------------------------------- plumbing ---
-
-  private async request<T>(
-    method: "GET" | "POST" | "PATCH" | "DELETE",
-    path: string,
-    headers: Record<string, string>,
-    body?: unknown,
-  ): Promise<GithubApiResponse<T>> {
-    let response: Response;
-    try {
-      response = await fetch(`${GITHUB_API}${path}`, {
-        method,
-        headers: {
-          accept: "application/vnd.github+json",
-          "x-github-api-version": "2022-11-28",
-          "user-agent": "orbitops-deploy",
-          ...(body ? { "content-type": "application/json" } : {}),
-          ...headers,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-    } catch (error) {
-      throw new GithubError(
-        `Could not reach the GitHub API: ${(error as Error).message}`,
-        502,
-      );
-    }
-
-    const text = await response.text();
-    let parsed: unknown = undefined;
-    if (text) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = text;
-      }
-    }
-
-    return { status: response.status, body: parsed as T };
-  }
-
-  /** Safe, credential-free description of a failed GitHub response. */
-  private describe(response: GithubApiResponse<unknown>): string {
-    const message = (response.body as { message?: string } | null)?.message ?? "";
-    return `HTTP ${response.status}${message ? ` - ${message}` : ""}`;
   }
 }

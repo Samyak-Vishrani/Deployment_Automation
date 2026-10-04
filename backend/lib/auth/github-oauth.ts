@@ -1,20 +1,26 @@
 import { createHash, randomBytes } from "node:crypto";
 
 /**
- * GitHub OAuth 2.0 (authorization code + PKCE) for signing users in.
+ * GitHub sign-in (authorization code + PKCE) through the GitHub App's own
+ * client id and secret.
  *
- * This is separate from the GitHub App in lib/github: the App acts on
- * repositories as an installation, while this flow only answers "which GitHub
- * user is this?". It asks for the minimum scopes that answer it and never
- * keeps the user's access token - nothing needs it after the callback.
+ * One App covers both identity and repository access: the user-to-server token
+ * GitHub returns here answers "which GitHub user is this?" and, afterwards,
+ * "which installations and repositories can this user see?". So the token pair
+ * is kept - sealed, in GitHubConnection - and refreshed by
+ * lib/github/github-user.service. It is never sent to the browser.
  *
- * Either a classic OAuth App or the GitHub App's own client id/secret work
- * here; both speak the same /login/oauth endpoints.
+ * A classic OAuth App's client id/secret still work for signing in (both speak
+ * the same /login/oauth endpoints), but its token cannot list installations,
+ * so the repository picker needs the GitHub App's values.
  */
 
 export const OAUTH_STATE_COOKIE = "orbitops_oauth_state";
 export const OAUTH_STATE_TTL_SECONDS = 60 * 10;
 
+// A GitHub App ignores `scope` - its user token gets the App's own permissions
+// (Email addresses: read-only is what fetchGithubProfile needs). Kept so a
+// classic OAuth App still asks for no more than sign-in requires.
 const SCOPES = "read:user user:email";
 
 export interface GithubOAuthConfig {
@@ -27,7 +33,7 @@ export class OAuthConfigError extends Error {
   constructor(missing: string[]) {
     super(
       `GitHub login is not configured. Missing: ${missing.join(", ")}. ` +
-        "Create a GitHub OAuth App and add its values to backend/.env.",
+        "Copy the GitHub App's client id and a client secret into backend/.env.",
     );
     this.name = "OAuthConfigError";
   }
@@ -148,32 +154,87 @@ async function githubApi<T>(path: string, token: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function exchangeCodeForToken(
-  config: GithubOAuthConfig,
-  code: string,
-  verifier: string,
-): Promise<string> {
+/**
+ * The user-to-server token pair. A GitHub App that expires user tokens (the
+ * default) sends all four; one that does not, or a classic OAuth App, sends the
+ * access token alone and the rest are null.
+ */
+export type GithubTokens = {
+  accessToken: string;
+  expiresAt: Date | null;
+  refreshToken: string | null;
+  refreshTokenExpiresAt: Date | null;
+};
+
+/** GitHub answered the token request with an error: the code or refresh token is no good. */
+export class OAuthTokenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OAuthTokenError";
+  }
+}
+
+const inSeconds = (seconds: number | undefined): Date | null =>
+  typeof seconds === "number" && seconds > 0 ? new Date(Date.now() + seconds * 1000) : null;
+
+async function requestToken(params: Record<string, string>): Promise<GithubTokens> {
   const response = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: config.clientId,
-      client_secret: config.clientSecret,
-      code,
-      redirect_uri: config.callbackUrl,
-      code_verifier: verifier,
-    }),
+    body: JSON.stringify(params),
     cache: "no-store",
   });
 
   // GitHub answers 200 even for a rejected code; the failure is in the body.
-  const body = (await response.json().catch(() => null)) as
-    | { access_token?: string; error?: string; error_description?: string }
-    | null;
+  const body = (await response.json().catch(() => null)) as {
+    access_token?: string;
+    expires_in?: number;
+    refresh_token?: string;
+    refresh_token_expires_in?: number;
+    error?: string;
+    error_description?: string;
+  } | null;
   if (!response.ok || !body?.access_token) {
-    throw new Error(body?.error_description ?? body?.error ?? "GitHub did not return an access token.");
+    throw new OAuthTokenError(
+      body?.error_description ?? body?.error ?? "GitHub did not return an access token.",
+    );
   }
-  return body.access_token;
+  return {
+    accessToken: body.access_token,
+    expiresAt: inSeconds(body.expires_in),
+    refreshToken: body.refresh_token ?? null,
+    refreshTokenExpiresAt: inSeconds(body.refresh_token_expires_in),
+  };
+}
+
+export function exchangeCodeForToken(
+  config: GithubOAuthConfig,
+  code: string,
+  verifier: string,
+): Promise<GithubTokens> {
+  return requestToken({
+    client_id: config.clientId,
+    client_secret: config.clientSecret,
+    code,
+    redirect_uri: config.callbackUrl,
+    code_verifier: verifier,
+  });
+}
+
+/**
+ * Trades a refresh token for a new pair. Refresh tokens are single-use: the
+ * old one stops working the moment this succeeds, so the result must be stored.
+ */
+export function refreshUserToken(
+  config: GithubOAuthConfig,
+  refreshToken: string,
+): Promise<GithubTokens> {
+  return requestToken({
+    client_id: config.clientId,
+    client_secret: config.clientSecret,
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+  });
 }
 
 export async function fetchGithubProfile(token: string): Promise<GithubProfile> {

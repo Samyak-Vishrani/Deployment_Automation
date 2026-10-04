@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { clearGithubTokens } from "@/lib/auth/users";
 import type { PushPayload } from "@/lib/deployments/push-payload";
 import { ensureBootstrapped, services } from "@/lib/runtime";
 import { verifySignature } from "@/lib/webhooks/signature";
@@ -63,6 +64,37 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (event === "ping") {
     console.log("[webhook] Ping received from GitHub - the webhook is wired up correctly.");
     return NextResponse.json({ received: true, status: "pong" });
+  }
+
+  // GitHub sends these three to every App, with no subscription needed.
+  if (
+    event === "installation" ||
+    event === "installation_repositories" ||
+    event === "github_app_authorization"
+  ) {
+    let payload: { action?: string; sender?: { id?: number } };
+    try {
+      payload = JSON.parse(raw) as typeof payload;
+    } catch {
+      return NextResponse.json({ message: "Webhook body is not valid JSON." }, { status: 400 });
+    }
+    const action = payload.action ?? "unknown";
+
+    if (event === "github_app_authorization") {
+      // The user revoked the App under Settings -> Applications. Their stored
+      // token is dead; keeping it would only make the next call fail.
+      if (action === "revoked" && payload.sender?.id !== undefined) {
+        const cleared = await clearGithubTokens({ githubUserId: String(payload.sender.id) });
+        console.log(`[webhook] Authorization revoked; cleared tokens on ${cleared} connection(s).`);
+      }
+      return NextResponse.json({ received: true, status: "processed" });
+    }
+
+    // Identifiers only, as with every app event: an open repository picker
+    // refetches, with its own user's token, rather than trusting this payload.
+    rt.events.emit({ kind: "github", action: `${event}.${action}` });
+    console.log(`[webhook] ${event}.${action}; repository lists notified.`);
+    return NextResponse.json({ received: true, status: "processed" });
   }
 
   if (event !== "push") {

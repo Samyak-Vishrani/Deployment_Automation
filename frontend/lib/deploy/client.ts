@@ -1,10 +1,12 @@
 import { api } from "@/lib/api";
 import { getApiBaseUrl } from "@/lib/api/config";
 import type {
+  BranchList,
   CreateDeployProjectInput,
   DeployProject,
   DeployRun,
   ProjectAnalysis,
+  RepositoryList,
 } from "./types";
 
 /**
@@ -47,6 +49,15 @@ export const analyzeProject = (id: string) =>
 
 export const getProjectAnalysis = (id: string) =>
   api.get<ProjectAnalysis>(`/api/projects/${id}/analysis`, withSession);
+
+/** Repositories the user can connect, read live from GitHub with their own token. */
+export const listRepositories = () => api.get<RepositoryList>("/api/repositories", withSession);
+
+export const listBranches = (owner: string, repo: string) =>
+  api.get<BranchList>(
+    `/api/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`,
+    withSession,
+  );
 
 /** Absolute URL for an EventSource, which cannot use the api client's fetch. */
 export function streamUrl(path: string): string {

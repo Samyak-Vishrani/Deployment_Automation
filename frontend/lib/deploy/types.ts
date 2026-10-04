@@ -60,6 +60,49 @@ export type CreateDeployProjectInput = {
   envVars?: Record<string, string>;
 };
 
+/** An installation of the GitHub App the signed-in user can see. */
+export type GithubInstallation = {
+  id: string;
+  account: string;
+  accountType: string;
+  repositorySelection: "all" | "selected";
+  /** GitHub's settings page for the installation, where repositories are added. */
+  manageUrl: string;
+};
+
+/** A repository the signed-in user can connect. */
+export type GithubRepository = {
+  id: number;
+  fullName: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  defaultBranch: string;
+  installationId: string;
+  pushedAt: string | null;
+  /** Set when this user already has a project for the repository. */
+  projectId: string | null;
+};
+
+export type RepositoryList = {
+  installUrl: string;
+  installations: GithubInstallation[];
+  repositories: GithubRepository[];
+  /** Some installation has more repositories than the list holds. */
+  truncated: boolean;
+};
+
+export type BranchList = {
+  defaultBranch: string;
+  branches: Array<{ name: string; protected: boolean }>;
+};
+
+/** One message on the backend's /api/events feed. Identifiers only; refetch for data. */
+export type AppEvent =
+  | { kind: "deployment"; projectId: string; deploymentId: string; status: string }
+  | { kind: "project"; projectId: string; action: "created" | "updated" | "deleted" }
+  | { kind: "github"; action: string };
+
 export type ComponentRole = "frontend" | "backend" | "unknown";
 
 /** One deployable app the repository analysis found, with the commands it proposes. */
