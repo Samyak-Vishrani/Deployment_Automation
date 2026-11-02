@@ -43,7 +43,7 @@ Docker deploy path keeps working untouched.
 
 ## Steps
 
-### 1. Schema + migration — `backend/prisma/schema.prisma`
+### 1. Schema + migration — `backend/prisma/schema.prisma` — ✅ done (migration `202611020001_deployment_configuration` written, not yet applied: Postgres was down)
 Add enums and model; new migration, timestamped after `202609300001_analysis_snapshot` (Phase 4):
 
 ```prisma
@@ -93,7 +93,7 @@ detection, so every `ProjectComponent` already carries `role`, `installCmd`, `bu
 
 The configure screen (step 7) is where the user overrides any of it.
 
-### 4. Component service + validation
+### 4. Component service + validation — ✅ done
 - `backend/lib/components/component-input.ts` — hand-written validators in the style of
   `backend/lib/projects/project-input.ts` (unknown-key rejection, max lengths). Rules: `rootDir`
   relative, no `..`, no leading `/`; `provider` must equal `PROVIDER_FOR_KIND[kind]` in the MVP;
@@ -108,7 +108,7 @@ The configure screen (step 7) is where the user overrides any of it.
     `ProjectsService.getOrThrow`. Emit `events.projectChanged(id, "updated")`.
 - `backend/lib/components/provider-rules.ts` — `PROVIDER_FOR_KIND`, labels.
 
-### 5. Pre-flight — `backend/lib/components/preflight.ts`
+### 5. Pre-flight — `backend/lib/components/preflight.ts` — ✅ done
 `runPreflight(project, components, deps) → { ok: boolean; checks: Check[] }`, each check
 `{ id, componentId?, status: "pass"|"fail"|"pending", message }`:
 - **root dir exists** — one `getRepositoryTree` call (installation token), check each `rootDir`
@@ -119,7 +119,7 @@ The configure screen (step 7) is where the user overrides any of it.
   `pending: "Connect <Vercel|Render|Neon> in Settings (available in Phase 6)"`.
 - **at least one component** configured.
 
-### 6. API routes (Next.js route handlers, pattern of `backend/app/api/projects/[projectId]/route.ts`: `requireUser` → service → `toErrorResponse`)
+### 6. API routes (Next.js route handlers, pattern of `backend/app/api/projects/[projectId]/route.ts`: `requireUser` → service → `toErrorResponse`) — ✅ done
 | Method & path | Purpose |
 |---|---|
 | `GET  /api/projects/:id/components` | saved components |
@@ -130,7 +130,7 @@ The configure screen (step 7) is where the user overrides any of it.
 
 The `analyze`/`analysis` routes already use `requireUser` + `toErrorResponse` (Phase 4).
 
-### 7. Frontend — real-backend pages under `/deploy`
+### 7. Frontend — real-backend pages under `/deploy` — ✅ done
 - `frontend/lib/deploy/types.ts` + `client.ts`: `DeployComponent`, `PreflightResult`, and
   `getComponentProposal`, `listComponents`, `saveComponents`, `getPreflight` (same `withSession` pattern).
 - New `frontend/app/(dashboard)/deploy/[projectId]/configure/page.tsx`:
@@ -145,7 +145,7 @@ The `analyze`/`analysis` routes already use `requireUser` + `toErrorResponse` (P
   Docker Deploy/Rollback buttons unchanged.
 - Reuse existing UI primitives (`components/ui/*`, `form-grid`, `field-label`, `panel` classes from `deploy/new/page.tsx`).
 
-### 8. Docs
+### 8. Docs — ✅ done
 - Update `PLAN.md` Phase 5 checkboxes; note the analysis auth fix under Phase 4.
 - `frontend/docs/API_CONTRACT.md`: add the component + preflight endpoints.
 
@@ -153,7 +153,7 @@ The `analyze`/`analysis` routes already use `requireUser` + `toErrorResponse` (P
 Provider API calls and `ProviderCredential` storage (6–8), encrypted per-component env vars (9),
 Dockerfile generation (post-MVP `local-docker`).
 
-## Verification
+## Verification — 🟡 automated checks pass; migration and manual checks pending
 1. `cd backend && npx prisma migrate dev` applies cleanly; `npm run typecheck && npm run lint && npm test`.
 2. New vitest suites: `component-input.test.ts` (provider/kind rule, `..` rejection, unknown keys),
    `preflight.test.ts` (fake tree/fetcher), `components.service.test.ts` (replaceAll keeps

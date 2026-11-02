@@ -107,6 +107,88 @@ Errors use the shared `{ "error": code, "message": text }` shape:
 | `502` | `github_api_error` | GitHub answered with an error |
 | `500` | `analysis_failed` | The detection engine itself failed |
 
+## Deployment configuration
+
+Live on the backend (under `/api`). A **component** is one deployable part of a project as the user
+confirmed it. It is stored apart from the analysis, so re-analysing never changes it. The MVP fixes the
+provider per kind: `frontend` → `vercel`, `backend` → `render`, `database` → `neon`.
+
+| Method | Route | Response |
+| --- | --- | --- |
+| `GET` | `/api/projects/:projectId/components` | `DeployComponent[]` (frontends first) |
+| `GET` | `/api/projects/:projectId/components/proposal` | `ComponentProposal` (runs the analysis first if there is none; saves nothing) |
+| `PUT` | `/api/projects/:projectId/components` | `DeployComponent[]`, the saved set |
+| `PATCH` | `/api/projects/:projectId/components/:componentId` | `DeployComponent` |
+| `DELETE` | `/api/projects/:projectId/components/:componentId` | `{ "deleted": true, "id": "…" }` |
+| `GET` | `/api/projects/:projectId/preflight` | `PreflightResult` |
+
+```ts
+type ComponentFields = {
+  kind: "frontend" | "backend" | "database";
+  name: string;                       // ≤ 100 chars
+  rootDir: string;                    // relative, no "..", no leading "/"; "." is the root
+  framework: string | null;
+  installCmd: string | null;          // commands: one line, ≤ 500 chars; null on a database
+  buildCmd: string | null;
+  startCmd: string | null;
+  outputDir: string | null;
+  nodeVersion: string | null;
+  provider: "vercel" | "render" | "neon" | "local_docker";   // optional on PUT: defaults from kind
+  analysisComponentId: string | null; // the analysis row it was proposed from
+};
+
+type DeployComponent = ComponentFields & {
+  id: string;
+  projectId: string;
+  providerResourceId: string | null;  // set by the provider phases
+  url: string | null;
+  status: "draft" | "configured" | "deploying" | "live" | "failed";
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ComponentProposal = {
+  analysisId: string | null;
+  branch: string | null;
+  commitSha: string | null;
+  analyzedAt: string;
+  components: Array<Omit<ComponentFields, "kind" | "provider"> & {
+    kind: ComponentFields["kind"] | null;        // null when the analysis could not tell
+    provider: ComponentFields["provider"] | null;
+    evidence: string[];
+    confidence: number | null;
+  }>;
+};
+
+type PreflightResult = {
+  ok: boolean;                        // every check is "pass"
+  checks: Array<{
+    id: string;                       // "components" | "root-dir:<id>" | "env:<id>" | "credential:<provider>"
+    componentId?: string;
+    status: "pass" | "fail" | "pending";
+    message: string;                  // names env vars, never their values
+  }>;
+};
+```
+
+`PUT` takes `{ "components": ComponentFields[] }`, the complete set. Rows are matched on
+`(kind, rootDir)`. A match is updated in place, so its `providerResourceId`, `url` and status survive;
+a `draft` becomes `configured`. New rows are created as `configured`, and rows left out are deleted.
+`PATCH` takes any subset of the fields except `kind` and `analysisComponentId`.
+
+Pre-flight checks:
+
+- at least one component is configured
+- each `rootDir` is a folder on the branch
+- each `<rootDir>/.env.example` key has a value in the project's env vars (`DATABASE_URL` counts as
+  supplied when a database component is configured)
+- each provider has a connected account. This check stays `pending` until Phase 6.
+
+Errors: `400 bad_request` for validation (unknown field, `..` in a path, wrong provider for the kind,
+two components of one kind in one folder, more than one database); `404 not_found` for a project or
+component that does not exist or belongs to another user; `409 conflict` when a `PATCH` moves a
+component onto a folder another component of the same kind already uses.
+
 ## Repositories
 
 Live on the backend (under `/api`). Read with the signed-in user's own GitHub token, so a user only

@@ -109,16 +109,16 @@ export default function NewDeployProjectPage() {
         ...(watchPaths.trim() && { watchPaths: lines(watchPaths) }),
         ...(envText.trim() && { envVars: parseEnv(envText) }),
       });
-      // Analyse straight away so the project page opens with its components.
+      // Analyse straight away so the configure screen opens with its proposal.
       // A failure here is not a failed connect: the project exists, and the
-      // project page offers the analysis again with the error in view.
+      // configure screen analyses again (and shows the error) when it loads.
       setAnalyzing(true);
       console.log(`[analysis] project ${project.id} created; analysing ${project.repoFullName}…`);
       const startedAt = performance.now();
       await analyzeProject(project.id)
         .then((result) => logAnalysis("first analysis after connect", result, startedAt))
         .catch((e) => console.error("[analysis] first analysis failed:", e));
-      router.push(`/deploy/${project.id}`);
+      router.push(`/deploy/${project.id}/configure`);
     } catch (e) {
       setError((e as Error).message);
       setSaving(false);

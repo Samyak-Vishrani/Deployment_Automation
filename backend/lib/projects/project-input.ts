@@ -65,14 +65,14 @@ const UPDATE_KEYS = [
 /** Lowercase, digits and dashes, starting with a letter or digit. */
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
-function asObject(body: unknown): Record<string, unknown> {
+export function asObject(body: unknown): Record<string, unknown> {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     throw badRequest("Request body must be a JSON object.");
   }
   return body as Record<string, unknown>;
 }
 
-function rejectUnknownKeys(body: Record<string, unknown>, allowed: readonly string[]): void {
+export function rejectUnknownKeys(body: Record<string, unknown>, allowed: readonly string[]): void {
   const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
   if (unknown.length > 0) {
     throw badRequest(`Unexpected field(s): ${unknown.join(", ")}.`);

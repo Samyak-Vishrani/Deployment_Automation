@@ -28,6 +28,30 @@ enum AnalysisStatus {
   failed
 }
 
+/// What a deployable component is. Decides which provider it may go to.
+enum ComponentKind {
+  frontend
+  backend
+  database
+}
+
+/// Where a component is deployed. `local_docker` is the existing push-to-deploy
+/// path, whose settings still live on Project.
+enum ProviderId {
+  vercel
+  render
+  neon
+  local_docker
+}
+
+enum ComponentStatus {
+  draft
+  configured
+  deploying
+  live
+  failed
+}
+
 model User {
   id           String   @id @default(cuid())
   name         String
@@ -145,10 +169,11 @@ model Project {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  components  ProjectComponent[]
-  analyses    Analysis[]
-  deployments Deployment[]
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  components       ProjectComponent[]
+  analyses         Analysis[]
+  deployments      Deployment[]
+  deployComponents Component[]
 
   @@unique([userId, githubFullName])
   @@index([userId])
@@ -218,6 +243,44 @@ model ProjectComponent {
   @@index([analysisId])
   @@index([type])
   @@index([framework])
+}
+
+/// One deployable part of a project, as the user confirmed it.
+///
+/// Separate from ProjectComponent on purpose. Those rows are analysis output:
+/// re-generated on every run and pruned with their snapshot. These are owned by
+/// the user and will hold provider resource ids, so re-analysing must never
+/// touch them.
+model Component {
+  id                  String          @id @default(cuid())
+  projectId           String
+  kind                ComponentKind
+  /// Shown on the configure card: "web", "api"...
+  name                String          @db.VarChar(100)
+  /// Folder within the repository; "." is the root.
+  rootDir             String          @default(".") @db.VarChar(500)
+  framework           String?         @db.VarChar(100)
+  installCmd          String?         @db.VarChar(500)
+  buildCmd            String?         @db.VarChar(500)
+  startCmd            String?         @db.VarChar(500)
+  outputDir           String?         @db.VarChar(500)
+  nodeVersion         String?         @db.VarChar(100)
+  provider            ProviderId
+  /// The provider's id for this component (Vercel project, Render service,
+  /// Neon project). Filled in by the provider phases.
+  providerResourceId  String?         @db.VarChar(255)
+  url                 String?         @db.Text
+  status              ComponentStatus @default(draft)
+  /// The ProjectComponent this was proposed from. Not a foreign key: that row
+  /// is pruned with its analysis snapshot, and this one must outlive it.
+  analysisComponentId String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, kind, rootDir])
+  @@index([projectId])
 }
 
 model Deployment {

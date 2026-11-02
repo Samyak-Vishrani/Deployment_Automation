@@ -11,10 +11,18 @@ import {
   deleteDeployProject,
   deployProject,
   getDeployProject,
+  listComponents,
   listDeployRuns,
   rollbackProject,
 } from "@/lib/deploy/client";
-import { duration, pillStatus, type DeployProject, type DeployRun } from "@/lib/deploy/types";
+import {
+  duration,
+  pillStatus,
+  PROVIDER_LABEL,
+  type DeployComponent,
+  type DeployProject,
+  type DeployRun,
+} from "@/lib/deploy/types";
 import { useAppEvents } from "@/lib/deploy/useAppEvents";
 import { relativeTime } from "@/lib/format";
 
@@ -23,17 +31,20 @@ export default function DeployProjectPage() {
   const router = useRouter();
   const [project, setProject] = useState<DeployProject | null>(null);
   const [runs, setRuns] = useState<DeployRun[]>([]);
+  const [components, setComponents] = useState<DeployComponent[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [projectItem, runItems] = await Promise.all([
+      const [projectItem, runItems, componentItems] = await Promise.all([
         getDeployProject(projectId),
         listDeployRuns(projectId),
+        listComponents(projectId),
       ]);
       setProject(projectItem);
       setRuns(runItems);
+      setComponents(componentItems);
       setError("");
     } catch (e) {
       setError((e as Error).message);
@@ -259,6 +270,52 @@ export default function DeployProjectPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="section-heading">
+        <div>
+          <h2>Components</h2>
+          <p>Where each part of the repository deploys: frontends to Vercel, backends to Render, the database to Neon.</p>
+        </div>
+        <Link className="button button-secondary" href={`/deploy/${projectId}/configure`}>
+          <Icon name="settings" size={14} /> Configure
+        </Link>
+      </div>
+      <div className="panel panel-pad">
+        {components.length === 0 ? (
+          <div className="empty-inline">
+            Not configured yet. Open Configure to confirm what the analysis found.
+          </div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Component</th>
+                <th>Kind</th>
+                <th>Folder</th>
+                <th>Provider</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {components.map((component) => (
+                <tr key={component.id}>
+                  <td className="primary-cell">{component.name}</td>
+                  <td>{component.kind}</td>
+                  <td>
+                    <code className="commit-code">
+                      {component.rootDir === "." ? "/ (root)" : component.rootDir}
+                    </code>
+                  </td>
+                  <td>{PROVIDER_LABEL[component.provider]}</td>
+                  <td>
+                    <span className="meta-chip">{component.status}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <AnalysisPanel projectId={projectId} />

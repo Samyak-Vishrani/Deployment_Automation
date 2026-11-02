@@ -2,9 +2,13 @@ import { api } from "@/lib/api";
 import { getApiBaseUrl } from "@/lib/api/config";
 import type {
   BranchList,
+  ComponentFields,
+  ComponentProposal,
   CreateDeployProjectInput,
+  DeployComponent,
   DeployProject,
   DeployRun,
+  PreflightResult,
   ProjectAnalysis,
   RepositoryList,
 } from "./types";
@@ -49,6 +53,20 @@ export const analyzeProject = (id: string) =>
 
 export const getProjectAnalysis = (id: string) =>
   api.get<ProjectAnalysis>(`/api/projects/${id}/analysis`, withSession);
+
+export const listComponents = (projectId: string) =>
+  api.get<DeployComponent[]>(`/api/projects/${projectId}/components`, withSession);
+
+/** Components proposed from the latest analysis (analysing first if needed). Nothing is saved. */
+export const getComponentProposal = (projectId: string) =>
+  api.get<ComponentProposal>(`/api/projects/${projectId}/components/proposal`, withSession);
+
+/** Replaces the saved set; components matched on kind + folder keep their provider ids. */
+export const saveComponents = (projectId: string, components: ComponentFields[]) =>
+  api.put<DeployComponent[]>(`/api/projects/${projectId}/components`, { components }, withSession);
+
+export const getPreflight = (projectId: string) =>
+  api.get<PreflightResult>(`/api/projects/${projectId}/preflight`, withSession);
 
 /** Repositories the user can connect, read live from GitHub with their own token. */
 export const listRepositories = () => api.get<RepositoryList>("/api/repositories", withSession);

@@ -1,4 +1,5 @@
 import { AnalysisService } from "@/lib/analysis/analysis.service";
+import { ComponentsService } from "@/lib/components/components.service";
 import prisma from "@/lib/db/prisma";
 import { DeployExecutor } from "@/lib/deployments/deploy-executor.service";
 import { DeploymentLogsService } from "@/lib/deployments/deployment-logs.service";
@@ -32,6 +33,7 @@ export interface Runtime {
   deployments: DeploymentsService;
   projects: ProjectsService;
   analysis: AnalysisService;
+  components: ComponentsService;
   deliveries: DeliveryStore;
   executor: DeployExecutor;
   bootstrapped?: Promise<void>;
@@ -51,6 +53,7 @@ function build(): Runtime {
   const deployments = new DeploymentsService(prisma, queue, events);
   const projects = new ProjectsService(prisma, github, githubUser, docker, events);
   const analysis = new AnalysisService(prisma, github);
+  const components = new ComponentsService(prisma, github, analysis, events);
   const executor = new DeployExecutor(prisma, github, docker, logs, events);
 
   // The queue is constructed before the executor exists, so the runner is
@@ -67,6 +70,7 @@ function build(): Runtime {
     deployments,
     projects,
     analysis,
+    components,
     deliveries,
     executor,
   };

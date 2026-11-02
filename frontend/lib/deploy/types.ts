@@ -158,6 +158,80 @@ export type ProjectAnalysis = {
   components: AnalysisComponent[];
 };
 
+export type ComponentKind = "frontend" | "backend" | "database";
+export type ProviderId = "vercel" | "render" | "neon" | "local_docker";
+export type ComponentStatus = "draft" | "configured" | "deploying" | "live" | "failed";
+
+/** The fields of a component the user edits on the configure screen. */
+export type ComponentFields = {
+  kind: ComponentKind;
+  name: string;
+  /** Folder within the repository; "." is the root. */
+  rootDir: string;
+  framework: string | null;
+  installCmd: string | null;
+  buildCmd: string | null;
+  startCmd: string | null;
+  outputDir: string | null;
+  nodeVersion: string | null;
+  provider: ProviderId;
+  analysisComponentId: string | null;
+};
+
+/** A saved deployable component. Separate from AnalysisComponent: re-analysing never changes it. */
+export type DeployComponent = ComponentFields & {
+  id: string;
+  projectId: string;
+  /** The provider's id for it, set once a provider phase has deployed it. */
+  providerResourceId: string | null;
+  url: string | null;
+  status: ComponentStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** A component the analysis suggests. `kind` and `provider` are null when it could not tell. */
+export type ProposedComponent = Omit<ComponentFields, "kind" | "provider"> & {
+  kind: ComponentKind | null;
+  provider: ProviderId | null;
+  evidence: string[];
+  confidence: number | null;
+};
+
+export type ComponentProposal = {
+  analysisId: string | null;
+  branch: string | null;
+  commitSha: string | null;
+  analyzedAt: string;
+  components: ProposedComponent[];
+};
+
+export type PreflightCheck = {
+  id: string;
+  componentId?: string;
+  status: "pass" | "fail" | "pending";
+  message: string;
+};
+
+export type PreflightResult = {
+  ok: boolean;
+  checks: PreflightCheck[];
+};
+
+/** The MVP rule, mirrored from the backend: one provider per kind. */
+export const PROVIDER_FOR_KIND: Record<ComponentKind, ProviderId> = {
+  frontend: "vercel",
+  backend: "render",
+  database: "neon",
+};
+
+export const PROVIDER_LABEL: Record<ProviderId, string> = {
+  vercel: "Vercel",
+  render: "Render",
+  neon: "Neon",
+  local_docker: "Local Docker",
+};
+
 export const isFinished = (status: DeploymentStatus) =>
   status === "success" || status === "failed" || status === "cancelled";
 

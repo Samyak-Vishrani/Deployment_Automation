@@ -10,7 +10,7 @@ Docker, …) through the same provider interface.
 
 Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not started
 
-**Status as of 2026-10-04:** Phases 3 and 4 done. Next up: Phase 5 (`Plans/Plans_Remaining/PLAN_PHASE_5.md`).
+**Status as of 2026-11-02:** Phases 3 and 4 done. Phase 5 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_5.md`); it needs its migration applied and a manual check before Phase 6.
 
 ---
 
@@ -22,7 +22,7 @@ Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not star
 | 2 | Authentication | 🟡 | — |
 | 3 | GitHub integration | ✅ | GitHub App JWT → installation token, repo metadata, branch check, webhook HMAC + dedupe |
 | 4 | Repository analysis | ✅ | Source fetch (tarball → extract); detection, build settings, DB hints and snapshots added on top |
-| 5 | Deployment configuration | 🟡 | — |
+| 5 | Deployment configuration | 🟡 | Code complete; migration not applied and the manual checks not yet run |
 | 6 | Vercel integration | ⬜ | Queue and status model can be reused |
 | 7 | Render integration | ⬜ | — |
 | 8 | Neon integration | ⬜ | — |
@@ -200,16 +200,26 @@ Overriding the result is delivered by Phase 5.
 
 **Goal:** the user confirms where each component goes.
 
-- 🟡 Data model rework (replaces the Docker-specific `Project` fields):
-  - `Project`: `id, userId, name, repoId, repoFullName, branch, installationId, autoDeploy`
-  - `Component`: `id, projectId, kind (frontend|backend|database), rootDir, framework, buildCmd,
-    startCmd, outputDir, provider (vercel|render|neon), providerResourceId, url, status`
-  - Keep the docker fields for the `local-docker` provider only, or move them to a JSON `providerConfig`
-- ⬜ MVP rule: provider per kind is fixed (frontend→vercel, backend→render, database→neon). The
-  dropdown shows only that option, but it is stored as data so post-MVP is a UI change only.
-- 🟡 `POST /api/projects` from an analysis → creates the project + components
-- ⬜ UI: configuration screen (Frontend → Vercel, Backend → Render, Database → Neon, **Deploy** button)
-- ⬜ Pre-flight checks: provider credential present, required env vars filled, root dir exists
+Code complete (`Plans/Plans_Remaining/PLAN_PHASE_5.md`). Before this phase is ✅, the
+`202611020001_deployment_configuration` migration has to be applied and the manual checks in that
+plan run against a real repo.
+
+- ✅ Data model: a new `Component` model (`kind`, `name`, `rootDir`, `framework`, install/build/start
+  commands, `outputDir`, `nodeVersion`, `provider`, `providerResourceId`, `url`, `status`), unique on
+  `(projectId, kind, rootDir)`. It is kept apart from the `ProjectComponent` analysis snapshot, so
+  re-analysing never wipes user edits or provider ids. The Docker fields stay on `Project` for the
+  `local-docker` path.
+- ✅ MVP rule: provider per kind is fixed (frontend→vercel, backend→render, database→neon). It is
+  enforced in `lib/components/provider-rules.ts` and stored per component as data, so post-MVP is a
+  validator and UI change only.
+- ✅ `POST /api/projects` stays as is (repo → project). Components are created in a second step:
+  `GET …/components/proposal` maps the latest analysis onto proposed cards, and `PUT …/components`
+  saves the confirmed set. `PATCH`/`DELETE …/components/:id` edit or remove one.
+- ✅ UI: `/deploy/[projectId]/configure`. It has one card per component, an "Add database (Neon)"
+  toggle, Save, a pre-flight panel and a **Deploy** button that stays disabled until pre-flight
+  passes. Connecting a repository now lands here, and the project page shows a Components summary.
+- ✅ Pre-flight checks (`GET …/preflight`): root dir exists, `.env.example` keys have values, and at
+  least one component. The provider-credential check reports `pending` until Phase 6.
 
 ---
 
