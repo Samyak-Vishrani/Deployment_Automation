@@ -1,7 +1,8 @@
 # Deployment Automation
 
 A developer connects a GitHub repository; a push to its branch builds a Docker image and replaces
-the running container, with the build log streamed live to the dashboard.
+the running container, with the build log streamed live to the dashboard. From Phase 6, a
+frontend component can instead be deployed to the user's own Vercel account.
 
 ## Architecture
 
@@ -15,15 +16,13 @@ Backend  :3001            Next.js route handlers — API, webhook, deploy pipeli
 Prisma → PostgreSQL :5433
   ↓
 Docker daemon             build + run each project's container on 127.0.0.1:5000-5999
+
+Backend :3001  ⇄  Vercel integration :3002   backend/vercel_integration — its own service
+                    ↓                          (Fastify + Prisma, Postgres schema "vercel")
+                  Vercel REST API             projects, deploys, status, build logs
 ```
 
 GitHub delivers pushes to a single App-level webhook at `POST /api/webhooks/github`.
-
-Backend components can also deploy to Render from **Deploy → project → Deploy backend**.
-The integration connects a user's Render workspace, stores secrets encrypted, creates/reuses a
-web service, tracks deployment status and logs, and analyzes failed deployments with the existing
-Groq agent. See [Render setup and testing](RENDER_TESTING.md) for migrations, configuration,
-smoke tests, and production requirements.
 
 ## Backend layout
 
@@ -38,6 +37,9 @@ backend/
     projects/[id]/analysis      latest analysis snapshot  ← phase 4
     repositories/               the user's repos and branches, read live from GitHub  ← phase 3
     auth/github/                sign-in through the GitHub App; also where installs land
+    projects/[id]/components/   configure components; [cid]/deploy deploys one to its provider  ← phase 5/6
+    providers/                  connect / disconnect provider accounts (proxied to the service)  ← phase 6
+    internal/provider-events    signed deploy events from the Vercel integration service  ← phase 6
   lib/
     github/github-app.service   App JWT → installation token, repo metadata, branch SHA, source tarball
     github/github.service       tree + file reads at a commit SHA  ← phase 4
@@ -49,6 +51,8 @@ backend/
     docker/                     container lifecycle
     projects/                   port allocator, validation
     analysis/                   framework detection, build settings, database hints  ← phase 4
+    components/                 component config, provider rules, pre-flight  ← phase 5
+    providers/                  Vercel-service client, provider deploys, callback handling  ← phase 6
     runtime.ts                  process-wide service graph + startup reconciliation
 ```
 
@@ -84,6 +88,16 @@ npm install
 npm run dev              # :3000
 ```
 
+Terminal 3 (Vercel deploys, Phase 6):
+
+```bash
+cd backend/vercel_integration
+cp .env.example .env     # then fill in the secrets, see "Vercel setup"
+npm install
+npx prisma migrate deploy  # creates the "vercel" schema
+npm run dev              # :3002
+```
+
 ## GitHub App setup
 
 One GitHub App does both jobs. The push pipeline authenticates as an *installation*, so a
@@ -108,12 +122,43 @@ client id, and the user token it returns lists the repositories that user can co
 The private key is a credential: it is covered by `.gitignore` (`*.pem`, `.env`) and must never be
 committed.
 
+## Vercel setup
+
+Frontend components deploy to the user's own Vercel account. The Vercel code is a separate service
+in `backend/vercel_integration`; the backend reaches it on `127.0.0.1:3002`.
+
+1. Generate two shared secrets and put the **same** values in `backend/.env` and
+   `backend/vercel_integration/.env`:
+   - `INTERNAL_SERVICE_TOKEN`: the backend sends it on every call to the service.
+   - `INTERNAL_CALLBACK_SECRET`: signs the deploy events the service posts back.
+
+   Generate each with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+2. Set `ENCRYPTION_KEY` in `backend/vercel_integration/.env`, a different key from the backend's.
+   It seals the users' Vercel tokens.
+3. Start the service (Terminal 3 above), then in the dashboard go to **Settings → Integrations**.
+   Paste a Vercel access token created at <https://vercel.com/account/tokens>, scoped to the team
+   you deploy to. The token is validated with Vercel and stored encrypted; it is never shown again.
+4. *Recommended:* install **Vercel's GitHub app** on the repositories you deploy. Vercel then
+   builds straight from GitHub. Without it, every deploy downloads the commit and uploads the files,
+   which is slower and limited to 100 MB / 15,000 files.
+5. For projects it creates, OrbitOps switches off Vercel's own deploy-on-push. Deploy from the
+   dashboard; once a component has been deployed, a push that changes its folder redeploys it.
+
+The Vercel token is a credential, as are both shared secrets: keep them out of git (`.env` is
+ignored in both folders).
+
+To check how the real Vercel API answers for your account (step 0 of
+`Plans/Plans_Remaining/PLAN_PHASE_6.md`), run `npm run spike` in `backend/vercel_integration`. The
+required variables are at the bottom of its `.env.example`. It creates one throwaway project and
+deletes it at the end.
+
 ## Tests
 
 ```bash
-cd backend  && npm test        # 224 unit tests (analysis, detection, build settings, push filter, GitHub, auth)
+cd backend  && npm test        # 289 unit tests (analysis, detection, components, pre-flight, push filter, GitHub, auth, provider deploys)
 cd backend  && npm run test:e2e  # drives the real webhook route against a running backend
 cd frontend && npm test
+cd backend/vercel_integration && npm test   # Vercel provider, upload, credentials, outbox, runner, API
 ```
 
 The e2e script signs real HMAC payloads and asserts on the resulting database rows, so it covers
@@ -136,6 +181,20 @@ Backend (`backend/.env`):
 | `PORT_RANGE_START` / `PORT_RANGE_END` | host ports handed to deployed containers |
 | `DEPLOY_CONCURRENCY` | parallel builds; per-project builds are always serialised |
 | `DATA_DIR` | build workspaces and deployment logs |
+| `VERCEL_SERVICE_URL` | the Vercel integration service; default `http://127.0.0.1:3002` |
+| `INTERNAL_SERVICE_TOKEN` | shared with the service; sent on every call to it |
+| `INTERNAL_CALLBACK_SECRET` | shared with the service; verifies its deploy events |
+
+Vercel integration (`backend/vercel_integration/.env`):
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | the same Postgres, with `?schema=vercel` |
+| `ENCRYPTION_KEY` | 32 bytes, base64; seals Vercel tokens; required in production; not the backend's key |
+| `INTERNAL_SERVICE_TOKEN` / `INTERNAL_CALLBACK_SECRET` | the same values as in `backend/.env` |
+| `MAIN_API_URL` | the backend, for event callbacks; default `http://localhost:3001` |
+| `HOST` / `PORT` | default `127.0.0.1:3002`; keep it on loopback |
+| `DEPLOY_CONCURRENCY`, `VERCEL_POLL_INTERVAL_MS`, `VERCEL_DEPLOY_TIMEOUT_MIN` | optional tuning (8, 3000, 45) |
 
 Frontend (`frontend/.env`):
 

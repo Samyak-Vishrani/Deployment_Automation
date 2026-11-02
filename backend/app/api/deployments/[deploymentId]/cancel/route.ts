@@ -21,7 +21,12 @@ export async function POST(_request: Request, context: RouteContext): Promise<Ne
   try {
     const user = await requireUser();
     const { deploymentId } = await context.params;
-    await getOwnedDeployment(user.id, deploymentId);
+    const deployment = await getOwnedDeployment(user.id, deploymentId);
+    // A provider deploy runs in its integration service, which cancels it on
+    // the provider too; a local Docker build is cancelled through the queue.
+    if (deployment.provider !== "local_docker") {
+      return NextResponse.json(await services().providerDeployments.cancel(deployment));
+    }
     return NextResponse.json(await services().deployments.cancel(deploymentId));
   } catch (error) {
     return toErrorResponse(error);

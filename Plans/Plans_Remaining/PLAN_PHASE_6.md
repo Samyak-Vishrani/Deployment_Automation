@@ -4,6 +4,29 @@
 > `Plans/Plans_Remaining/PLAN_PHASE_6.md` (companion to `PLAN_PHASE_5.md`), then work through the
 > steps below in order.
 
+> **Status: code implemented (2026-11-02), following the Addendum: all Vercel code is in
+> `backend/vercel_integration/`.** Not yet done: step 0 (the API spike, which needs a real Vercel
+> token: `npm run spike`), applying the two migrations, and the manual checks in Verification §4.
+>
+> Where the code departs from the text below, and why:
+> - **No `DeploymentProvider` interface or `ProviderRegistry` in the main backend.** With the
+>   addendum, the provider lives in the service (`src/vercel/vercel.provider.ts`), and the backend's
+>   `lib/providers/provider-deployments.service.ts` chooses by `component.provider`. A registry of
+>   one entry would add nothing; Render (Phase 7) is where it pays off.
+> - **`Deployment.providerEventSeq` was added** (not in A6). It makes callback batches idempotent
+>   (at most once, in order) with a single conditional check, so the service can redeliver freely.
+> - **`NormalisedStatus` gained `deploying`**, meaning "we are creating the project / starting the
+>   deploy, before Vercel has a deployment". The table below maps it to `running`.
+> - **No framework pre-flight check in the backend.** The framework map lives in the service; an
+>   unknown framework is sent as "Other", and Vercel auto-detects it.
+> - **`POST /deployments/:id/redeploy` is not exposed.** `VercelProvider.redeploy` is implemented
+>   and tested; Phase 11's rollback UI will add the route.
+> - **A cancelled deploy leaves the component `live`** if it had a URL, because the previous Vercel
+>   deployment keeps serving. Otherwise it goes back to `configured`.
+> - **The service runs TypeScript with `tsx`** (no build step) and uses Fastify 5. Its secret-box,
+>   redact and fs-utils are copies of the backend's (A1).
+> - **`backend/.env.example` no longer contains a real `ENCRYPTION_KEY`** (step 12).
+
 ## Context
 
 `PLAN.md` Phase 6 ("the frontend component deploys to the user's Vercel account") is the first

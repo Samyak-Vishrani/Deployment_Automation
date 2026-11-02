@@ -10,6 +10,9 @@ import { EventsService } from "@/lib/events/events.service";
 import { GithubAppService } from "@/lib/github/github-app.service";
 import { GithubUserService } from "@/lib/github/github-user.service";
 import { ProjectsService } from "@/lib/projects/projects.service";
+import { ProviderDeploymentsService } from "@/lib/providers/provider-deployments.service";
+import { ProviderLogSink } from "@/lib/providers/provider-log-sink";
+import { VercelServiceClient } from "@/lib/providers/vercel-service.client";
 import { DeliveryStore } from "@/lib/webhooks/delivery-store";
 
 /**
@@ -34,6 +37,10 @@ export interface Runtime {
   projects: ProjectsService;
   analysis: AnalysisService;
   components: ComponentsService;
+  /** Client for the vercel_integration service (backend/vercel_integration). */
+  vercel: VercelServiceClient;
+  /** Deploys to external providers and applies the events they report back. */
+  providerDeployments: ProviderDeploymentsService;
   deliveries: DeliveryStore;
   executor: DeployExecutor;
   bootstrapped?: Promise<void>;
@@ -53,9 +60,7 @@ function build(): Runtime {
   const deployments = new DeploymentsService(prisma, queue, events);
   const projects = new ProjectsService(prisma, github, githubUser, docker, events);
   const analysis = new AnalysisService(prisma, github);
-  const components = new ComponentsService(prisma, github, analysis, events, async (userId, provider) =>
-    provider === "render" && Boolean(await prisma.renderConnection.findUnique({ where: { userId }, select: { userId: true } })),
-  );
+  const components = new ComponentsService(prisma, github, analysis, events);
   const executor = new DeployExecutor(prisma, github, docker, logs, events);
 
   // The queue is constructed before the executor exists, so the runner is
@@ -73,6 +78,8 @@ function build(): Runtime {
     projects,
     analysis,
     components,
+    vercel,
+    providerDeployments,
     deliveries,
     executor,
   };
@@ -111,8 +118,12 @@ export function ensureBootstrapped(): Promise<void> {
 async function bootstrap(rt: Runtime): Promise<void> {
   // Anything left 'running' is a lie from a previous process: nothing is
   // executing it now, and without this it would sit there for ever.
+  //
+  // Local Docker builds only. A provider deploy (Vercel) runs in its
+  // integration service, not in this process, so a restart here does not
+  // interrupt it; reconcile() below checks those instead.
   const stale = await prisma.deployment.updateMany({
-    where: { status: "running" },
+    where: { status: "running", provider: "local_docker" },
     data: {
       status: "failed",
       errorMessage: "Interrupted by a backend restart.",
@@ -124,7 +135,7 @@ async function bootstrap(rt: Runtime): Promise<void> {
   }
 
   const pending = await prisma.deployment.findMany({
-    where: { status: "queued" },
+    where: { status: "queued", provider: "local_docker" },
     orderBy: { queuedAt: "asc" },
     select: { id: true, projectId: true },
   });
@@ -141,6 +152,12 @@ async function bootstrap(rt: Runtime): Promise<void> {
   await rt.docker.sweepOrphans(new Set(projects.map((p) => p.id)));
 
   registerShutdownHooks(rt);
+
+  // Not awaited: a slow or stopped integration service must not hold up every
+  // request that waits on bootstrap.
+  void rt.providerDeployments
+    .reconcile()
+    .catch((error: Error) => console.warn(`[bootstrap] Provider reconcile failed: ${error.message}`));
 }
 
 const globalForHooks = globalThis as unknown as { __orbitopsShutdownHooked?: boolean };

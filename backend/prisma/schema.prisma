@@ -279,7 +279,6 @@ model Component {
   updatedAt           DateTime        @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  renderConfig RenderConfig?
 
   @@unique([projectId, kind, rootDir])
   @@index([projectId])
@@ -364,11 +363,35 @@ model Deployment {
   startedAt  DateTime?
   finishedAt DateTime?
 
+  // ------------------------------------------------ provider deploys (phase 6) --
+  /// The component this deploys. NULL for the project-wide local Docker deploys.
+  componentId          String?
+  /// Who builds and hosts it. Existing rows are local Docker builds.
+  provider             ProviderId @default(local_docker)
+  /// The provider's own id for this deployment (Vercel's dpl_...).
+  providerDeploymentId String?    @db.VarChar(255)
+  /// The provider's progress: queued | deploying | building | live | failed | cancelled.
+  /// `status` above keeps the five lifecycle values every screen already knows.
+  providerStatus       String?    @db.VarChar(20)
+  /// "git" (the provider read the repo itself) or "upload" (we sent the files).
+  sourceMode           String?    @db.VarChar(10)
+  /// This deployment's own URL on the provider.
+  url                  String?    @db.Text
+  /// The provider's dashboard page for this deployment.
+  inspectorUrl         String?    @db.Text
+  /// Last event batch applied from the vercel_integration service. Batches at
+  /// or below it are redeliveries and are ignored.
+  providerEventSeq     Int        @default(0)
+
+  component Component? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+
   /// The durable idempotency backstop. Postgres treats NULLs as distinct, so
   /// manual deploys (deliveryId NULL) are unlimited, while a GitHub redelivery
   /// arriving after a restart - when the in-memory DeliveryStore is empty -
   /// hits this constraint instead of deploying twice. Catch P2002.
   @@unique([projectId, deliveryId])
+  @@unique([provider, providerDeploymentId])
   @@index([projectId, queuedAt(sort: Desc)])
+  @@index([componentId, queuedAt(sort: Desc)])
   @@index([status])
 }

@@ -22,7 +22,7 @@ function deps(overrides: Partial<PreflightDeps> = {}, files: Record<string, stri
       truncated: false,
     })),
     readFile: vi.fn(async (path: string) => files[path]),
-    hasCredential: vi.fn(async () => false),
+    credentialState: vi.fn(async () => "missing" as const),
     ...overrides,
   };
 }
@@ -40,20 +40,49 @@ describe("runPreflight", () => {
     expect(d.listTree).not.toHaveBeenCalled();
   });
 
-  it("passes existing folders and leaves credentials pending until Phase 6", async () => {
+  it("passes existing folders and asks for a Vercel account when none is connected", async () => {
     const result = await runPreflight(project, [web, api], deps());
     expect(byId(result, "root-dir:c1")?.status).toBe("pass");
     expect(byId(result, "root-dir:c2")?.status).toBe("pass");
     expect(byId(result, "credential:vercel")).toMatchObject({
+      status: "fail",
+      message: "Connect Vercel in Settings to deploy there.",
+    });
+    expect(byId(result, "credential:render")).toMatchObject({
       status: "pending",
-      message: "Vercel deployment is not available yet.",
+      message: "Connect Vercel in Settings (available in Phase 6).",
     });
     expect(result.ok).toBe(false);
+    expect(result.deployable).toEqual({ c1: false, c2: false });
   });
 
   it("is ok once every check passes", async () => {
-    const result = await runPreflight(project, [web], deps({ hasCredential: async () => true }));
+    const result = await runPreflight(project, [web], deps({ credentialState: async () => "connected" }));
     expect(result.ok).toBe(true);
+    expect(result.deployable).toEqual({ c1: true });
+  });
+
+  it("makes a connected Vercel component deployable while Render is still pending", async () => {
+    const result = await runPreflight(project, [web, api, db], deps({ credentialState: async () => "connected" }));
+    expect(result.ok).toBe(false);
+    expect(result.deployable).toEqual({ c1: true, c2: false, c3: false });
+  });
+
+  it("blocks a component whose own checks fail", async () => {
+    const result = await runPreflight(
+      project,
+      [{ ...web, rootDir: "apps/web" }],
+      deps({ credentialState: async () => "connected" }),
+    );
+    expect(result.deployable).toEqual({ c1: false });
+  });
+
+  it.each([
+    ["invalid", "Vercel rejected the saved token. Reconnect Vercel in Settings."],
+    ["unavailable", "The Vercel integration service is not running, so the Vercel account could not be checked."],
+  ] as const)("fails a %s Vercel account", async (state, message) => {
+    const result = await runPreflight(project, [web], deps({ credentialState: async () => state }));
+    expect(byId(result, "credential:vercel")).toMatchObject({ status: "fail", message });
   });
 
   it("fails a folder that is not in the tree", async () => {

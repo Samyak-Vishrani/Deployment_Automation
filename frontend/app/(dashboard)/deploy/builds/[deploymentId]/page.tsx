@@ -11,9 +11,11 @@ import {
   duration,
   isFinished,
   pillStatus,
+  PROVIDER_LABEL,
   type DeploymentStatus,
   type DeployRun,
 } from "@/lib/deploy/types";
+import { useAppEvents } from "@/lib/deploy/useAppEvents";
 import { relativeTime } from "@/lib/format";
 
 export default function BuildPage() {
@@ -66,6 +68,14 @@ export default function BuildPage() {
     return () => source.close();
   }, [deploymentId]);
 
+  // A provider deploy learns its dashboard link and URL part-way through, so
+  // refetch the row when this deployment changes rather than only at the end.
+  useAppEvents((event) => {
+    if (event?.kind === "deployment" && event.deploymentId === deploymentId) {
+      void getDeployRun(deploymentId).then(setRun).catch(() => undefined);
+    }
+  });
+
   const live = status !== null && !isFinished(status);
 
   return (
@@ -91,9 +101,26 @@ export default function BuildPage() {
               </span>
             ) : null}
             {run?.trigger ? <span className="meta-chip">{run.trigger}</span> : null}
+            {run && run.provider !== "local_docker" ? (
+              <span className="meta-chip">
+                {PROVIDER_LABEL[run.provider]}
+                {run.sourceMode ? ` · ${run.sourceMode === "git" ? "from GitHub" : "uploaded"}` : ""}
+                {run.providerStatus && live ? ` · ${run.providerStatus}` : ""}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="run-actions">
+          {run?.inspectorUrl ? (
+            <a className="button button-secondary" href={run.inspectorUrl} target="_blank" rel="noreferrer">
+              View on {PROVIDER_LABEL[run.provider]} <Icon name="external" size={13} />
+            </a>
+          ) : null}
+          {status === "success" && run?.url ? (
+            <a className="button button-primary" href={run.url} target="_blank" rel="noreferrer">
+              Open site <Icon name="external" size={13} />
+            </a>
+          ) : null}
           {live ? (
             <button
               className="button button-danger"
@@ -125,7 +152,11 @@ export default function BuildPage() {
         <div className="panel-title-row">
           <div>
             <h3>Build output</h3>
-            <p>Fetch, docker build, and the container swap. Secrets are redacted as they stream.</p>
+            <p>
+              {run && run.provider !== "local_docker"
+                ? `${PROVIDER_LABEL[run.provider]}'s build output, relayed as it runs. Secrets are redacted as they stream.`
+                : "Fetch, docker build, and the container swap. Secrets are redacted as they stream."}
+            </p>
           </div>
           {run?.imageTag ? <span className="tiny-label">{run.imageTag}</span> : null}
         </div>

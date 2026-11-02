@@ -161,7 +161,9 @@ type ComponentProposal = {
 };
 
 type PreflightResult = {
-  ok: boolean;                        // every check is "pass"
+  ok: boolean;                        // every check is "pass" (Phase 8's "Deploy all")
+  deployable: Record<string, boolean>; // per component id: its checks + its provider account pass, and
+                                      // its provider can deploy today (Vercel; Render/Neon in Phases 7/8)
   checks: Array<{
     id: string;                       // "components" | "root-dir:<id>" | "env:<id>" | "credential:<provider>"
     componentId?: string;
@@ -182,12 +184,79 @@ Pre-flight checks:
 - each `rootDir` is a folder on the branch
 - each `<rootDir>/.env.example` key has a value in the project's env vars (`DATABASE_URL` counts as
   supplied when a database component is configured)
-- each provider has a connected account. This check stays `pending` until Phase 6.
+- each provider has a connected account. Vercel: `pass` when connected, otherwise `fail` (not
+  connected, token rejected, or the Vercel integration service is not running). Render and Neon stay
+  `pending` until Phases 7 and 8.
 
 Errors: `400 bad_request` for validation (unknown field, `..` in a path, wrong provider for the kind,
 two components of one kind in one folder, more than one database); `404 not_found` for a project or
 component that does not exist or belongs to another user; `409 conflict` when a `PATCH` moves a
 component onto a folder another component of the same kind already uses.
+
+## Providers and Vercel deploys
+
+Live on the backend from Phase 6. Vercel work runs in a separate service
+(`backend/vercel_integration`), which the backend proxies to. The browser only ever talks to the
+backend, with the session cookie.
+
+| Method | Route | Response |
+| --- | --- | --- |
+| `GET` | `/api/providers/credentials` | `ProviderCredential[]`: Vercel, then Render and Neon as `unavailable` |
+| `GET` | `/api/providers/vercel/credential` | `ProviderCredential` |
+| `PUT` | `/api/providers/vercel/credential` | body `{ "token": "…" }`. Validated with Vercel, stored encrypted; returns `ProviderCredential` |
+| `PATCH` | `/api/providers/vercel/credential` | body `{ "teamId": "team_…" \| null }`. The team new projects go to |
+| `DELETE` | `/api/providers/vercel/credential` | `{ "deleted": boolean }`. Projects on Vercel are kept |
+| `POST` | `/api/projects/:projectId/components/:componentId/deploy` | `202` `DeployRun`, queued at the branch head |
+| `GET` | `/api/projects/:projectId/components/:componentId/deployments` | `DeployRun[]`, the last 20 |
+
+```ts
+type ProviderCredential = {
+  provider: "vercel" | "render" | "neon";
+  state: "connected" | "invalid" | "missing" | "unavailable"; // unavailable: service down / later phase
+  accountName?: string | null;
+  teamId?: string | null;             // null = personal scope
+  teamSlug?: string | null;
+  teams?: Array<{ id: string; slug: string; name: string }>;
+  scopeLocked?: boolean;              // a Vercel project exists, so the team is fixed
+  lastValidatedAt?: string | null;
+  message?: string;                   // why it is unavailable
+};
+
+// DeployRun (from /api/deployments/:id and the history lists) gains:
+type DeployRunProviderFields = {
+  componentId: string | null;         // null for the project-wide Docker builds
+  provider: "vercel" | "render" | "neon" | "local_docker";
+  providerStatus: "queued" | "deploying" | "building" | "live" | "failed" | "cancelled" | null;
+  providerDeploymentId: string | null; // Vercel's dpl_…
+  sourceMode: "git" | "upload" | null; // git: Vercel read GitHub itself; upload: we sent the files
+  url: string | null;                 // this deployment's own *.vercel.app URL
+  inspectorUrl: string | null;        // the Vercel dashboard page
+};
+```
+
+A Vercel deploy reuses the existing run plumbing:
+- `status` keeps its five values (`queued → running → success | failed | cancelled`), while
+  `providerStatus` carries Vercel's finer progress.
+- `/api/events` emits `{ kind: "deployment" }` on every change.
+- `/api/deployments/:id/logs/stream` streams Vercel's build output.
+- `POST /api/deployments/:id/cancel` also cancels on Vercel.
+- When the deploy goes live, the component's `status` becomes `live` and its `url` is the
+  production `*.vercel.app` address.
+
+A push that changes files under a component's `rootDir` redeploys it, but only once the component
+has been deployed at least once. Vercel's own deploy-on-push is switched off for projects we create.
+
+| Status | `error` | When |
+| --- | --- | --- |
+| 400 | `bad_request` | unknown provider, Render/Neon before their phase, a local-Docker component, a project without a repo or branch |
+| 404 | `not_found` | project or component missing, or another user's |
+| 412 | `vercel_not_connected` | no Vercel token saved |
+| 412 | `vercel_token_invalid` | Vercel rejected the saved token; reconnect in Settings |
+| 403 | `vercel_forbidden` | the token cannot act in the selected team |
+| 409 | `conflict` | changing team after a Vercel project exists; saving a token for a different Vercel account once projects exist |
+| 429 | `vercel_limit` / `vercel_rate_limited` | Vercel plan limit or rate limit |
+| 502 | `vercel_unavailable` / `vercel_error` | Vercel unreachable or returned an error |
+| 503 | `vercel_service_unavailable` | the Vercel integration service is not running, or the shared token differs |
 
 ## Repositories
 

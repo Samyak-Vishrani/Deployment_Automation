@@ -10,7 +10,7 @@ Docker, …) through the same provider interface.
 
 Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not started
 
-**Status as of 2026-11-02:** Phases 3 and 4 done. Phase 5 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_5.md`); it needs its migration applied and a manual check before Phase 6.
+**Status as of 2026-11-02:** Phases 3 and 4 done. Phase 5 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_5.md`); it needs its migration applied and a manual check. Phase 6 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_6.md`): Vercel is a separate service in `backend/vercel_integration`. It needs its secrets, its migrations applied, the API spike and a live deploy check.
 
 ---
 
@@ -23,13 +23,13 @@ Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not star
 | 3 | GitHub integration | ✅ | GitHub App JWT → installation token, repo metadata, branch check, webhook HMAC + dedupe |
 | 4 | Repository analysis | ✅ | Source fetch (tarball → extract); detection, build settings, DB hints and snapshots added on top |
 | 5 | Deployment configuration | 🟡 | Code complete; migration not applied and the manual checks not yet run |
-| 6 | Vercel integration | ⬜ | Queue and status model can be reused |
+| 6 | Vercel integration | 🟡 | Code complete as its own service (`backend/vercel_integration`); needs secrets, migrations, the API spike and a live check |
 | 7 | Render integration | ⬜ | — |
 | 8 | Neon integration | ⬜ | — |
 | 9 | Environment variables | 🟡 | `envVars` column, values never returned by the API, log redaction; encryption helper (`secret-box.ts`) exists but env vars are not encrypted yet |
 | 10 | Dashboard | 🟡 | Project list, status badges, live `/events` SSE |
-| 11 | Deployment history | 🟡 | Per-project history and detail page; still needs component and provider columns |
-| 12 | Logs | 🟡 | Local log file + SSE replay-then-tail; still needs logs pulled from providers |
+| 11 | Deployment history | 🟡 | Per-project history and detail page; component and provider columns added in Phase 6 |
+| 12 | Logs | 🟡 | Local log file + SSE replay-then-tail; Vercel build logs relayed into it since Phase 6 |
 | 13 | AI assistant | ⬜ | — |
 
 ---
@@ -219,44 +219,56 @@ plan run against a real repo.
   toggle, Save, a pre-flight panel and a **Deploy** button that stays disabled until pre-flight
   passes. Connecting a repository now lands here, and the project page shows a Components summary.
 - ✅ Pre-flight checks (`GET …/preflight`): root dir exists, `.env.example` keys have values, and at
-  least one component. The provider-credential check reports `pending` until Phase 6.
+  least one component. The Vercel credential check is real since Phase 6; Render and Neon report `pending` until Phases 7 and 8.
 
 ---
 
-## Phase 6 — Vercel Integration ⬜
+## Phase 6 — Vercel Integration 🟡
 
 **Goal:** the frontend component deploys to the user's Vercel account.
 
-- ⬜ **Provider interface** — `providers/provider.interface.ts`:
-  ```ts
-  interface DeploymentProvider {
-    readonly id: 'vercel' | 'render' | 'local-docker';
-    validateCredentials(cred): Promise<AccountInfo>;
-    ensureResource(component, env): Promise<{ resourceId: string; url?: string }>; // create/update project/service
-    deploy(component, commitSha): Promise<{ providerDeploymentId: string; url?: string }>;
-    getStatus(providerDeploymentId): Promise<NormalisedStatus>;
-    getLogs(providerDeploymentId, since?): Promise<LogLine[]>;
-    redeploy(providerDeploymentId): Promise<...>;
-    setEnv(resourceId, vars): Promise<void>;
-    destroy?(resourceId): Promise<void>;
-  }
-  ```
-  `NormalisedStatus = queued | building | deploying | live | failed | cancelled`
-- ⬜ `ProviderRegistry` — pick the implementation by `component.provider`
-- ⬜ **Credentials (MVP):** the user pastes a Vercel access token in `/settings` → validated with
-  `GET /v2/user` → stored encrypted in `ProviderCredential(userId, provider, tokenEnc, accountId, teamId?)`.
-  Vercel OAuth "Integration" comes after the MVP.
-- ⬜ `VercelProvider`:
-  - `ensureResource`: `POST /v11/projects` with `framework`, `rootDirectory`, build/output overrides
-  - Git source: needs the user's Vercel account linked to GitHub (Vercel's GitHub app). Deploy with
-    `POST /v13/deployments` + `gitSource { type: 'github', repoId, ref, sha }`.
-    **Fallback** if not linked: upload files from our tarball (`POST /v2/files` + `files[]` deployment).
-  - Turn off Vercel's own auto-deploy on push (`gitProviderOptions`/ignored build step) so **we** own triggering
-  - `getStatus`: `GET /v13/deployments/:id` (`readyState`) → normalised
-  - `getLogs`: `GET /v3/deployments/:id/events`
-- ⬜ `ProviderDeployment` rows (see Phase 11 model)
-- ⬜ Poller: reuse `deployments/deployment-queue.ts` for serialisation; poll status every 3–5 s with
-  backoff until terminal, and publish over the existing `/events` SSE
+Built as a **separate service**, `backend/vercel_integration/` (Fastify + Prisma, Postgres schema
+`vercel`, port 3002). The backend talks to it with a shared `INTERNAL_SERVICE_TOKEN`; it posts
+deploy events back to `/api/internal/provider-events`, HMAC-signed. Details:
+`Plans/Plans_Remaining/PLAN_PHASE_6.md` and `backend/vercel_integration/README.md`.
+
+- ✅ **Provider** (`vercel_integration/src/vercel/vercel.provider.ts`):
+  - `validateCredentials`, `ensureProject`, `deploy`, `getStatus`, `getLogs`, `cancel`,
+    `redeploy`, `setEnv`, `destroy`
+  - `NormalisedStatus = queued | deploying | building | live | failed | cancelled`
+  - No `ProviderRegistry` yet: with one provider it would be a lookup of one entry. Render
+    (Phase 7) adds its own service and the backend picks the client by `component.provider`.
+- ✅ **Credentials (MVP):** the user pastes a Vercel access token in Settings → Integrations.
+  - It is validated with `GET /v2/user` + `/v2/teams`, then stored sealed in the service's
+    `VercelCredential` (`userId, tokenEnc, accountId, teamId?`), never in the backend's database.
+  - Team picker; the team is locked once a project exists.
+  - Vercel OAuth "Integration" comes after the MVP.
+- ✅ `VercelProvider`:
+  - `ensureProject`: `POST /v11/projects` (framework preset, `rootDirectory`, build/install/output
+    overrides; `nodeVersion` via PATCH). Looks up before creating, PATCHes only on changed settings,
+    recreates if deleted on Vercel, and suffixes the name on a collision.
+  - Git source when Vercel's GitHub app can see the repo: `POST /v13/deployments` +
+    `gitSource { type: 'github', repoId, ref, sha }`.
+  - **Fallback:** download the commit's tarball, upload only the files Vercel lacks
+    (`missing_files` → `POST /v2/files`), and deploy with `files[]`.
+  - Turns off Vercel's own deploy-on-push (`gitProviderOptions.createDeployments = "disabled"`)
+    so **we** own triggering.
+  - `getStatus`: `GET /v13/deployments/:id` (`readyState`) → normalised. `getLogs`:
+    `GET /v3/deployments/:id/events`.
+- ✅ Provider columns on `Deployment` (`componentId, provider, providerDeploymentId, providerStatus,
+  sourceMode, url, inspectorUrl`) instead of a separate `ProviderDeployment` table
+- ✅ Poller in the service:
+  - per-component queue; polls every 3 s, backing off to 10 s, until terminal (45 min timeout);
+  - ordered, persisted, retried event callbacks feed the backend's log writer and the `/events` SSE;
+  - resumes after a restart of either service.
+- ✅ UI:
+  - Settings → Integrations connects Vercel;
+  - Configure has a Deploy button per Vercel component;
+  - the project page shows each component's live URL with Deploy/Redeploy;
+  - the build page links to Vercel and the live site.
+- ✅ Push-to-deploy for Vercel components already deployed once (watch path = `rootDir/**`)
+- ⬜ API spike against a real Vercel account (`npm run spike`), then tighten `isGitAccessError` from the recorded fixtures
+- ⬜ Live check: a Next.js subfolder goes live on `*.vercel.app`
 
 **Done when:** clicking Deploy puts a Next.js subfolder live on a `*.vercel.app` URL, and it shows in our dashboard.
 
@@ -333,9 +345,9 @@ plan run against a real repo.
 - ✅ `GET /projects/:id/deployments` (paged), `GET /deployments/:id`, cancel, rollback
 - ✅ Deployment detail page — `frontend/app/deployments/[id]/page.tsx`
 - ✅ Push-to-deploy pipeline: webhook → filters (branch, skip-ci, watch paths) → queue — `deployments/push-filter.ts`
-- ⬜ Add `componentId, provider, providerDeploymentId, url` and a per-project sequence number (`#12`)
+- 🟡 Add `componentId, provider, providerDeploymentId, url` (✅ Phase 6) and a per-project sequence number (`#12`)
 - ⬜ Group one "Deploy" click into a `Release` holding its component deployments
-- ⬜ Push-to-deploy now triggers provider deploys (per component, with watch paths = the component's `rootDir/**`)
+- 🟡 Push-to-deploy now triggers provider deploys (per component, with watch paths = the component's `rootDir/**`): ✅ Vercel (Phase 6)
 - ⬜ Rollback = provider redeploy of the previous successful `providerDeploymentId` / commit
 - ⬜ History table: `#, component, provider, status, commit, duration`
 
@@ -346,7 +358,7 @@ plan run against a real repo.
 - ✅ Log writer → file + in-process bus, with redaction — `deployments/deployment-logs.service.ts`
 - ✅ `GET /deployments/:id/logs` and SSE `/logs/stream`, replay then tail, 15 s heartbeat
 - ✅ Frontend log viewer that autoscrolls only when pinned to the bottom
-- ⬜ Pull provider logs (`getLogs`) during the poll loop into the same log writer, so the existing
+- 🟡 Pull provider logs (`getLogs`) during the poll loop into the same log writer (✅ Vercel, Phase 6), so the existing
   SSE + viewer work unchanged
 - ⬜ Add our own orchestration lines (`==> Provisioning Neon`, `==> Deploying to Render`)
 - 🟡 Highlight error lines, and a "copy log" button
@@ -367,8 +379,8 @@ plan run against a real repo.
 ## Cross-cutting
 
 - ✅ `crypto/secret-box.ts` (AES-256-GCM, versioned key id) — used by GitHub tokens today; provider tokens and env vars next
-- ⬜ Provider HTTP client: retries with backoff on 429/5xx, and error mapping to user-facing messages (same style as `GithubError`)
-- ⬜ Idempotency: `ensureResource` looks up before it creates; store provider resource ids straight away
+- ✅ Provider HTTP client: retries with backoff on 429/5xx, and error mapping to user-facing messages (`vercel_integration/src/http/`, Phase 6)
+- ✅ Idempotency: `ensureProject` looks up before it creates; provider resource ids are stored straight away (Phase 6)
 - ⬜ Contract tests per provider against recorded fixtures; one opt-in live smoke test per provider
 - ✅ Security baseline carried over: no tokens in argv/logs, `shell: false`, strict input validation (`ValidationPipe` whitelist)
 

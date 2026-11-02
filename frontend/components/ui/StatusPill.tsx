@@ -1,7 +1,18 @@
 import type { ReactNode } from "react";
 import type { DeploymentStatus, HealthStatus, RunStatus, StageStatus } from "@/lib/platform/types";
 
-type StatusValue = RunStatus | StageStatus | DeploymentStatus | HealthStatus | "healthy" | "degraded" | "offline" | "connected" | "configured";
+type StatusValue =
+  | RunStatus
+  | StageStatus
+  | DeploymentStatus
+  | HealthStatus
+  | "healthy"
+  | "degraded"
+  | "offline"
+  | "connected"
+  | "configured"
+  | "building"
+  | "live";
 
 const labels: Record<StatusValue, string> = {
   queued: "Queued",
@@ -21,6 +32,8 @@ const labels: Record<StatusValue, string> = {
   offline: "Not deployed",
   connected: "Connected",
   configured: "Configured",
+  building: "Building",
+  live: "Live",
 };
 
 const tone: Record<StatusValue, string> = {
@@ -41,6 +54,8 @@ const tone: Record<StatusValue, string> = {
   offline: "neutral",
   connected: "green",
   configured: "blue",
+  building: "blue",
+  live: "green",
 };
 
 export function StatusPill({ status, children }: { status: StatusValue; children?: ReactNode }) {

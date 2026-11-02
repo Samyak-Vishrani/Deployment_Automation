@@ -1,0 +1,88 @@
+// The Vercel integration service's own data.
+//
+// It lives in its own Postgres schema ("vercel", selected by `?schema=vercel`
+// in DATABASE_URL), next to the main backend's tables but never joined with
+// them. Ids that belong to the main backend (userId, componentId, deploymentId)
+// are plain strings here, not foreign keys: this service must keep working, and
+// its migrations must keep applying, regardless of what the other service's
+// schema looks like.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// One user's Vercel access token, sealed with src/crypto/secret-box.
+model VercelCredential {
+  id              String    @id @default(cuid())
+  /// The main backend's User.id.
+  userId          String    @unique
+  tokenEnc        String    @db.Text
+  accountId       String    @db.VarChar(255)
+  accountName     String    @db.VarChar(255)
+  /// Vercel scope every request is sent with (`?teamId=`). NULL = personal scope.
+  teamId          String?   @db.VarChar(255)
+  teamSlug        String?   @db.VarChar(255)
+  /// Teams the token can see, as [{ id, slug, name }], for the scope picker.
+  teams           Json      @default("[]")
+  /// Set when Vercel answered 401/403 with this token; cleared on re-save.
+  invalidAt       DateTime?
+  lastValidatedAt DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+/// The Vercel project we created for one main-backend Component.
+model VercelProject {
+  id              String   @id @default(cuid())
+  /// The main backend's Component.id.
+  componentId     String   @unique
+  userId          String
+  vercelProjectId String   @db.VarChar(255)
+  name            String   @db.VarChar(100)
+  teamId          String?  @db.VarChar(255)
+  /// True when Vercel's GitHub app could see the repository and the project is
+  /// linked to it, so deploys can use a Git source instead of uploading files.
+  gitLinked       Boolean  @default(false)
+  /// Hash of the build settings last sent to Vercel; unchanged = no PATCH.
+  settingsHash    String   @db.VarChar(64)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// One deploy of one component, mirrored from the main backend's Deployment.
+model VercelDeployment {
+  id                 String    @id @default(cuid())
+  /// The main backend's Deployment.id.
+  deploymentId       String    @unique
+  userId             String
+  componentId        String
+  /// The deploy request as received, minus the GitHub token (never stored).
+  input              Json
+  /// NormalisedStatus: queued | deploying | building | live | failed | cancelled
+  state              String    @default("queued") @db.VarChar(20)
+  vercelDeploymentId String?   @db.VarChar(255)
+  sourceMode         String?   @db.VarChar(10)
+  url                String?   @db.Text
+  inspectorUrl       String?   @db.Text
+  productionUrl      String?   @db.Text
+  errorMessage       String?   @db.Text
+  /// `created` (ms since epoch) of the newest Vercel log event already relayed.
+  lastEventAt        Float?
+  /// Last callback batch number handed out. Batches are delivered in order.
+  callbackSeq        Int       @default(0)
+  /// Batches not yet acknowledged by the main backend: [{ deploymentId, seq, events }].
+  pendingEvents      Json      @default("[]")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  finishedAt         DateTime?
+
+  @@index([state])
+  @@index([componentId, createdAt(sort: Desc)])
+}

@@ -13,7 +13,7 @@ import { GithubError, type GithubAppService } from "@/lib/github/github-app.serv
 import { getFileContent, getRepositoryTree, GitHubApiError } from "@/lib/github/github.service";
 import type { ParsedRepo } from "@/lib/github/repo-url";
 import { assertValidUpdate, type ComponentInput, type UpdateComponentInput } from "./component-input";
-import { runPreflight, type PreflightDeps, type PreflightResult } from "./preflight";
+import { runPreflight, type CredentialState, type PreflightDeps, type PreflightResult } from "./preflight";
 import { PROVIDER_FOR_KIND } from "./provider-rules";
 import { lockUser } from "@/lib/render/lock";
 import { ACTIVE } from "@/lib/render/client";
@@ -40,10 +40,10 @@ export type ComponentProposal = {
   components: ProposedComponent[];
 };
 
-/** Asks whether the user has connected a provider account. Real from Phase 6. */
-export type CredentialLookup = (userId: string, provider: ProviderId) => Promise<boolean>;
+/** Asks for the state of the user's account with a provider (Vercel: via the integration service). */
+export type CredentialLookup = (userId: string, provider: ProviderId) => Promise<CredentialState>;
 
-const notConnectedYet: CredentialLookup = async () => false;
+const notConnected: CredentialLookup = async () => "missing";
 
 const ORDER = [{ kind: "asc" }, { rootDir: "asc" }] satisfies Prisma.ComponentOrderByWithRelationInput[];
 
@@ -55,7 +55,7 @@ export class ComponentsService {
     private readonly github: GithubAppService,
     private readonly analysis: AnalysisService,
     private readonly events: EventsService,
-    private readonly hasCredential: CredentialLookup = notConnectedYet,
+    private readonly credentialState: CredentialLookup = notConnected,
   ) {}
 
   async list(userId: string, projectId: string): Promise<Component[]> {
@@ -208,7 +208,7 @@ export class ComponentsService {
         const { fullName, sha, token } = await open();
         return getFileContent(fullName, path, sha, token);
       },
-      hasCredential: this.hasCredential,
+      credentialState: this.credentialState,
     };
 
     return runPreflight({ userId, filledEnvKeys: providerEnvKeys ?? filledEnvKeys }, components, deps);

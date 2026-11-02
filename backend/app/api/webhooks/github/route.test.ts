@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const SECRET = "webhook_secret";
 
-const { mockEmit, mockClearTokens, mockHandlePush, mockMarkAsProcessed } = vi.hoisted(() => ({
+const { mockEmit, mockClearTokens, mockHandlePush, mockProviderPush, mockMarkAsProcessed } = vi.hoisted(() => ({
   mockEmit: vi.fn(),
   mockClearTokens: vi.fn(),
   mockHandlePush: vi.fn(),
+  mockProviderPush: vi.fn(),
   mockMarkAsProcessed: vi.fn(),
 }));
 
@@ -18,6 +19,7 @@ vi.mock("@/lib/runtime", () => ({
     deliveries: { markAsProcessed: mockMarkAsProcessed },
     events: { emit: mockEmit },
     deployments: { handlePush: mockHandlePush },
+    providerDeployments: { handlePush: mockProviderPush },
   }),
 }));
 
@@ -44,6 +46,7 @@ beforeEach(() => {
   mockMarkAsProcessed.mockReturnValue(true);
   mockClearTokens.mockResolvedValue(1);
   mockHandlePush.mockResolvedValue(undefined);
+  mockProviderPush.mockResolvedValue(0);
 });
 
 describe("POST /api/webhooks/github", () => {
@@ -85,5 +88,7 @@ describe("POST /api/webhooks/github", () => {
 
     await expect(response.json()).resolves.toMatchObject({ status: "accepted" });
     expect(mockHandlePush).toHaveBeenCalledTimes(1);
+    // ...and to the provider path, which redeploys Vercel components.
+    expect(mockProviderPush).toHaveBeenCalledTimes(1);
   });
 });

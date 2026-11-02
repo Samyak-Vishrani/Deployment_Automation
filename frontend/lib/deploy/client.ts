@@ -10,6 +10,7 @@ import type {
   DeployRun,
   PreflightResult,
   ProjectAnalysis,
+  ProviderCredential,
   RepositoryList,
 } from "./types";
 
@@ -67,6 +68,27 @@ export const saveComponents = (projectId: string, components: ComponentFields[])
 
 export const getPreflight = (projectId: string) =>
   api.get<PreflightResult>(`/api/projects/${projectId}/preflight`, withSession);
+
+/** Deploys one component to its provider (Vercel today) at the branch head. */
+export const deployComponent = (projectId: string, componentId: string) =>
+  api.post<DeployRun>(`/api/projects/${projectId}/components/${componentId}/deploy`, undefined, withSession);
+
+export const listComponentRuns = (projectId: string, componentId: string) =>
+  api.get<DeployRun[]>(`/api/projects/${projectId}/components/${componentId}/deployments`, withSession);
+
+/** Every provider account and its state. Tokens are never returned. */
+export const listProviderCredentials = () =>
+  api.get<ProviderCredential[]>("/api/providers/credentials", withSession);
+
+/** Validates the token with the provider, then stores it encrypted on the backend. */
+export const saveProviderToken = (provider: "vercel", token: string) =>
+  api.put<ProviderCredential>(`/api/providers/${provider}/credential`, { token }, withSession);
+
+export const setProviderTeam = (provider: "vercel", teamId: string | null) =>
+  api.patch<ProviderCredential>(`/api/providers/${provider}/credential`, { teamId }, withSession);
+
+export const disconnectProvider = (provider: "vercel") =>
+  api.delete<{ deleted: boolean }>(`/api/providers/${provider}/credential`, withSession);
 
 /** Repositories the user can connect, read live from GitHub with their own token. */
 export const listRepositories = () => api.get<RepositoryList>("/api/repositories", withSession);
