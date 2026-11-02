@@ -186,6 +186,8 @@ export type ComponentFields = {
   startCmd: string | null;
   outputDir: string | null;
   nodeVersion: string | null;
+  /** Path the provider checks once the service is up, e.g. "/health". Backends only. */
+  healthCheckPath: string | null;
   provider: ProviderId;
   analysisComponentId: string | null;
 };
@@ -238,15 +240,23 @@ export type ProviderStatus = "queued" | "deploying" | "building" | "live" | "fai
 
 export type CredentialState = "connected" | "invalid" | "missing" | "unavailable";
 
-/** The user's account with a provider. Never includes the token. */
+/** The user's account with a provider. Never includes the token or key. */
 export type ProviderCredential = {
   provider: ProviderId;
   state: CredentialState;
   accountName?: string | null;
+  /** Vercel: the team new projects are created in. */
   teamId?: string | null;
   teamSlug?: string | null;
   teams?: Array<{ id: string; slug: string; name: string }>;
-  /** A Vercel project already exists in the current team, so the team is fixed. */
+  /** Render: the workspace new services are created in. */
+  ownerId?: string | null;
+  ownerName?: string | null;
+  owners?: Array<{ id: string; name: string; type: string }>;
+  /** Render: defaults for new services (fixed per service once it exists). */
+  region?: string | null;
+  plan?: string | null;
+  /** Something already exists in the current team/workspace, so it is fixed. */
   scopeLocked?: boolean;
   lastValidatedAt?: string | null;
   /** Why the state is "unavailable". */
@@ -271,7 +281,24 @@ export const isFinished = (status: DeploymentStatus) =>
   status === "success" || status === "failed" || status === "cancelled";
 
 /** Providers that can deploy today; the others are configurable but arrive in later phases. */
-export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "local_docker"]);
+export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "render", "local_docker"]);
+
+/** Providers whose account is connected in Settings → Integrations. */
+export type ConnectableProvider = "vercel" | "render";
+
+export const RENDER_REGIONS = [
+  { id: "oregon", label: "Oregon (US West)" },
+  { id: "ohio", label: "Ohio (US East)" },
+  { id: "virginia", label: "Virginia (US East)" },
+  { id: "frankfurt", label: "Frankfurt (EU)" },
+  { id: "singapore", label: "Singapore (Asia)" },
+] as const;
+
+export const RENDER_PLANS = [
+  { id: "free", label: "Free (sleeps after 15 min idle)" },
+  { id: "starter", label: "Starter (paid)" },
+  { id: "standard", label: "Standard (paid)" },
+] as const;
 
 /** Maps a build status onto the tones StatusPill already knows. */
 export function pillStatus(status: DeploymentStatus) {

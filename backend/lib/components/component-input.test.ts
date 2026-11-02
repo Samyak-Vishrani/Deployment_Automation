@@ -104,3 +104,26 @@ describe("parseUpdateComponent", () => {
     expect(errorOf(() => parseUpdateComponent({ kind: "backend" })).message).toContain("kind");
   });
 });
+
+describe("healthCheckPath", () => {
+  const backend = (healthCheckPath: unknown) => ({
+    components: [{ kind: "backend", name: "api", rootDir: "backend", startCmd: "npm start", healthCheckPath }],
+  });
+
+  it("accepts a path starting with / and defaults to null", () => {
+    expect(parseComponentSet(backend("/health"))[0].healthCheckPath).toBe("/health");
+    expect(parseComponentSet(backend(undefined))[0].healthCheckPath).toBeNull();
+    expect(parseUpdateComponent({ healthCheckPath: "/api/ping" })).toEqual({ healthCheckPath: "/api/ping" });
+  });
+
+  it("rejects something that is not a path", () => {
+    expect(() => parseComponentSet(backend("health"))).toThrow(/healthCheckPath/);
+    expect(() => parseComponentSet(backend("/he alth"))).toThrow(/healthCheckPath/);
+  });
+
+  it("is not something a database has", () => {
+    expect(() =>
+      parseComponentSet({ components: [{ kind: "database", name: "db", healthCheckPath: "/health" }] }),
+    ).toThrow(/healthCheckPath/);
+  });
+});

@@ -5,8 +5,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    // vercel_integration is a separate service with its own vitest config.
-    exclude: ["**/node_modules/**", "vercel_integration/**"],
+    // The integration services are separate services with their own vitest configs.
+    exclude: ["**/node_modules/**", "vercel_integration/**", "render_integration/**"],
   },
   resolve: {
     alias: {

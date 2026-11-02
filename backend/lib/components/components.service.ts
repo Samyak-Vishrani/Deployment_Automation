@@ -106,6 +106,7 @@ export class ComponentsService {
           startCmd: input.startCmd,
           outputDir: input.outputDir,
           nodeVersion: input.nodeVersion,
+          healthCheckPath: input.healthCheckPath,
           provider: input.provider,
           analysisComponentId: input.analysisComponentId ?? previous?.analysisComponentId ?? null,
         };
@@ -266,6 +267,7 @@ export function proposeComponents(repoName: string, analysis: AnalysisResult): P
       startCmd: detected.startCmd,
       outputDir: detected.outputDir,
       nodeVersion: detected.runtimeVersion,
+      healthCheckPath: null,
       provider: kind ? PROVIDER_FOR_KIND[kind] : null,
       analysisComponentId: detected.id,
       evidence: detected.evidence,
@@ -284,6 +286,7 @@ export function proposeComponents(repoName: string, analysis: AnalysisResult): P
       startCmd: null,
       outputDir: null,
       nodeVersion: null,
+      healthCheckPath: null,
       provider: PROVIDER_FOR_KIND.database,
       analysisComponentId: null,
       evidence: analysis.database.evidence,

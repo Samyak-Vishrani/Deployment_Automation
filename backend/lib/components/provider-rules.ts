@@ -34,10 +34,24 @@ export function isAllowedProvider(kind: ComponentKind, provider: ProviderId): bo
 }
 
 /**
- * Providers that can deploy today. Render and Neon are configurable but wait
- * for Phases 7 and 8; pre-flight reports them as pending.
+ * Providers that can deploy today. Neon is configurable but waits for
+ * Phase 8; pre-flight reports it as pending.
  */
-export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "local_docker"]);
+export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "render", "local_docker"]);
+
+/**
+ * Frameworks Render can run, by runtime. A mirror of
+ * backend/render_integration/src/render/runtime-map.ts, which is the source of
+ * truth at deploy time; pre-flight uses this copy to warn before a deploy.
+ */
+export const RENDER_FRAMEWORKS: ReadonlySet<string> = new Set([
+  "nestjs", "express", "fastify", "hono", "koa", "node", "nodejs",
+  "fastapi", "flask", "django", "python",
+  "go", "gin", "fiber",
+  "rails", "ruby",
+  "rust", "actix", "axum", "rocket",
+  "docker",
+]);
 
 /** The PLAN.md phase that brings each provider, for "arrives in Phase N" messages. */
 export const PROVIDER_PHASE: Record<ProviderId, number> = {

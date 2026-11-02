@@ -133,6 +133,7 @@ type ComponentFields = {
   startCmd: string | null;
   outputDir: string | null;
   nodeVersion: string | null;
+  healthCheckPath: string | null;     // backends only: "/health"-style path (Phase 7); null otherwise
   provider: "vercel" | "render" | "neon" | "local_docker";   // optional on PUT: defaults from kind
   analysisComponentId: string | null; // the analysis row it was proposed from
 };
@@ -163,7 +164,7 @@ type ComponentProposal = {
 type PreflightResult = {
   ok: boolean;                        // every check is "pass" (Phase 8's "Deploy all")
   deployable: Record<string, boolean>; // per component id: its checks + its provider account pass, and
-                                      // its provider can deploy today (Vercel; Render/Neon in Phases 7/8)
+                                      // its provider can deploy today (Vercel, Render; Neon in Phase 8)
   checks: Array<{
     id: string;                       // "components" | "root-dir:<id>" | "env:<id>" | "credential:<provider>"
     componentId?: string;
@@ -184,28 +185,32 @@ Pre-flight checks:
 - each `rootDir` is a folder on the branch
 - each `<rootDir>/.env.example` key has a value in the project's env vars (`DATABASE_URL` counts as
   supplied when a database component is configured)
-- each provider has a connected account. Vercel: `pass` when connected, otherwise `fail` (not
-  connected, token rejected, or the Vercel integration service is not running). Render and Neon stay
-  `pending` until Phases 7 and 8.
+- each provider has a connected account. Vercel and Render: `pass` when connected, otherwise `fail`
+  (not connected, token/key rejected, or the integration service is not running). Neon stays
+  `pending` until Phase 8.
+- Render backends only: `runtime:<id>` (a framework Render can run: express, nestjs, fastapi,
+  docker…) and `start-cmd:<id>` (a start command; not needed for `docker`)
 
 Errors: `400 bad_request` for validation (unknown field, `..` in a path, wrong provider for the kind,
 two components of one kind in one folder, more than one database); `404 not_found` for a project or
 component that does not exist or belongs to another user; `409 conflict` when a `PATCH` moves a
 component onto a folder another component of the same kind already uses.
 
-## Providers and Vercel deploys
+## Providers: Vercel and Render deploys
 
-Live on the backend from Phase 6. Vercel work runs in a separate service
-(`backend/vercel_integration`), which the backend proxies to. The browser only ever talks to the
-backend, with the session cookie.
+Live on the backend from Phase 6 (Vercel) and Phase 7 (Render). Each provider's work runs in its
+own service (`backend/vercel_integration`, `backend/render_integration`), which the backend proxies
+to. The browser only ever talks to the backend, with the session cookie. `:provider` is `vercel` or
+`render`.
 
 | Method | Route | Response |
 | --- | --- | --- |
-| `GET` | `/api/providers/credentials` | `ProviderCredential[]`: Vercel, then Render and Neon as `unavailable` |
-| `GET` | `/api/providers/vercel/credential` | `ProviderCredential` |
-| `PUT` | `/api/providers/vercel/credential` | body `{ "token": "…" }`. Validated with Vercel, stored encrypted; returns `ProviderCredential` |
+| `GET` | `/api/providers/credentials` | `ProviderCredential[]`: Vercel, Render, then Neon as `unavailable` |
+| `GET` | `/api/providers/:provider/credential` | `ProviderCredential` |
+| `PUT` | `/api/providers/:provider/credential` | body `{ "token": "…" }` (Vercel token or Render API key). Validated with the provider, stored encrypted; returns `ProviderCredential` |
 | `PATCH` | `/api/providers/vercel/credential` | body `{ "teamId": "team_…" \| null }`. The team new projects go to |
-| `DELETE` | `/api/providers/vercel/credential` | `{ "deleted": boolean }`. Projects on Vercel are kept |
+| `PATCH` | `/api/providers/render/credential` | body `{ "ownerId"?, "region"?, "plan"? }`. Workspace (locked once a service exists), and region/plan for new services |
+| `DELETE` | `/api/providers/:provider/credential` | `{ "deleted": boolean }`. What exists on the provider is kept |
 | `POST` | `/api/projects/:projectId/components/:componentId/deploy` | `202` `DeployRun`, queued at the branch head |
 | `GET` | `/api/projects/:projectId/components/:componentId/deployments` | `DeployRun[]`, the last 20 |
 
@@ -217,7 +222,12 @@ type ProviderCredential = {
   teamId?: string | null;             // null = personal scope
   teamSlug?: string | null;
   teams?: Array<{ id: string; slug: string; name: string }>;
-  scopeLocked?: boolean;              // a Vercel project exists, so the team is fixed
+  ownerId?: string | null;            // Render: the workspace new services go to
+  ownerName?: string | null;
+  owners?: Array<{ id: string; name: string; type: string }>;
+  region?: string | null;             // Render: oregon | ohio | virginia | frankfurt | singapore
+  plan?: string | null;               // Render: free | starter | standard
+  scopeLocked?: boolean;              // a Vercel project / Render service exists, so team/workspace is fixed
   lastValidatedAt?: string | null;
   message?: string;                   // why it is unavailable
 };
@@ -257,6 +267,15 @@ has been deployed at least once. Vercel's own deploy-on-push is switched off for
 | 429 | `vercel_limit` / `vercel_rate_limited` | Vercel plan limit or rate limit |
 | 502 | `vercel_unavailable` / `vercel_error` | Vercel unreachable or returned an error |
 | 503 | `vercel_service_unavailable` | the Vercel integration service is not running, or the shared token differs |
+| 412 | `render_not_connected` / `render_key_invalid` | no Render API key saved / Render rejected it |
+| 400 | `render_repo_access` | Render cannot read the repository: connect Render to GitHub with access to it |
+| 400 | `render_missing_start` / `render_unknown_runtime` | the backend has no start command / no framework Render can run |
+| 429 | `render_billing` / `render_rate_limited` | the plan needs billing details on Render / Render rate limit |
+| 503 | `render_service_unavailable` | the Render integration service is not running, or `RENDER_SERVICE_TOKEN` differs |
+
+A Render deploy also sends the project's env vars to Render (never returned, never logged) and
+reports `sourceMode: "git"`, `inspectorUrl` = the deploy on Render's dashboard, and, once live,
+the component's `url` = its `https://*.onrender.com` address.
 
 ## Repositories
 

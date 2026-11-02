@@ -1,0 +1,98 @@
+// The Render integration service's own data.
+//
+// It lives in its own Postgres schema ("render", selected by `?schema=render`
+// in DATABASE_URL), next to the main backend's tables and the Vercel service's
+// schema but never joined with them. Ids that belong to the main backend
+// (userId, componentId, deploymentId) are plain strings here, not foreign
+// keys: this service must keep working, and its migrations must keep applying,
+// whatever the other schemas look like.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// One user's Render API key, sealed with src/crypto/secret-box, plus the
+/// defaults new services are created with.
+model RenderCredential {
+  id              String    @id @default(cuid())
+  /// The main backend's User.id.
+  userId          String    @unique
+  apiKeyEnc       String    @db.Text
+  /// The account the key belongs to, for display.
+  accountName     String    @db.VarChar(255)
+  /// The Render workspace ("owner") services are created in.
+  ownerId         String    @db.VarChar(255)
+  ownerName       String    @db.VarChar(255)
+  /// Workspaces the key can see, as [{ id, name, type }], for the picker.
+  owners          Json      @default("[]")
+  /// Defaults for new services. Render fixes both once a service exists.
+  region          String    @default("oregon") @db.VarChar(30)
+  plan            String    @default("free") @db.VarChar(30)
+  /// Set when Render answered 401 with this key; cleared on re-save.
+  invalidAt       DateTime?
+  lastValidatedAt DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+/// The Render web service we created for one main-backend Component.
+model RenderService {
+  id              String   @id @default(cuid())
+  /// The main backend's Component.id.
+  componentId     String   @unique
+  userId          String
+  renderServiceId String   @db.VarChar(255)
+  name            String   @db.VarChar(100)
+  ownerId         String   @db.VarChar(255)
+  region          String   @db.VarChar(30)
+  plan            String   @db.VarChar(30)
+  runtime         String   @db.VarChar(30)
+  /// The service's public https://*.onrender.com origin.
+  url             String?  @db.Text
+  dashboardUrl    String?  @db.Text
+  /// Hash of the PATCHable settings last sent (commands, rootDir, branch, health path).
+  settingsHash    String   @db.VarChar(64)
+  /// Hash of the env vars last sent (keys and values); unchanged = no env calls.
+  envHash         String   @default("") @db.VarChar(64)
+  /// Env var keys this service set on Render. Only these are ever deleted, so
+  /// variables added by hand on Render's dashboard survive.
+  managedEnvKeys  Json     @default("[]")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// One deploy of one component, mirrored from the main backend's Deployment.
+model RenderDeployment {
+  id             String    @id @default(cuid())
+  /// The main backend's Deployment.id.
+  deploymentId   String    @unique
+  userId         String
+  componentId    String
+  /// The deploy request as received, minus the env var values (never stored).
+  input          Json
+  /// NormalisedStatus: queued | deploying | building | live | failed | cancelled
+  state          String    @default("queued") @db.VarChar(20)
+  renderDeployId String?   @db.VarChar(255)
+  url            String?   @db.Text
+  dashboardUrl   String?   @db.Text
+  errorMessage   String?   @db.Text
+  /// Timestamp (ISO) of the newest Render log line already relayed.
+  lastLogAt      String?   @db.VarChar(40)
+  /// Last callback batch number handed out. Batches are delivered in order.
+  callbackSeq    Int       @default(0)
+  /// Batches not yet acknowledged by the main backend: [{ deploymentId, seq, events }].
+  pendingEvents  Json      @default("[]")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  finishedAt     DateTime?
+
+  @@index([state])
+  @@index([componentId, createdAt(sort: Desc)])
+}

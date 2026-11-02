@@ -12,6 +12,7 @@ import { GithubUserService } from "@/lib/github/github-user.service";
 import { ProjectsService } from "@/lib/projects/projects.service";
 import { ProviderDeploymentsService } from "@/lib/providers/provider-deployments.service";
 import { ProviderLogSink } from "@/lib/providers/provider-log-sink";
+import { RenderServiceClient } from "@/lib/providers/render-service.client";
 import { VercelServiceClient } from "@/lib/providers/vercel-service.client";
 import { DeliveryStore } from "@/lib/webhooks/delivery-store";
 
@@ -39,6 +40,8 @@ export interface Runtime {
   components: ComponentsService;
   /** Client for the vercel_integration service (backend/vercel_integration). */
   vercel: VercelServiceClient;
+  /** Client for the render_integration service (backend/render_integration). */
+  render: RenderServiceClient;
   /** Deploys to external providers and applies the events they report back. */
   providerDeployments: ProviderDeploymentsService;
   deliveries: DeliveryStore;
@@ -61,17 +64,19 @@ function build(): Runtime {
   const projects = new ProjectsService(prisma, github, githubUser, docker, events);
   const analysis = new AnalysisService(prisma, github);
   const vercel = new VercelServiceClient();
+  const render = new RenderServiceClient();
   const providerDeployments = new ProviderDeploymentsService(
     prisma,
     github,
     events,
-    vercel,
+    { vercel, render },
     new ProviderLogSink(logs),
   );
   const components = new ComponentsService(prisma, github, analysis, events, async (userId, provider) => {
-    if (provider !== "vercel") return "missing";
+    const client = provider === "vercel" ? vercel : provider === "render" ? render : null;
+    if (!client) return "missing";
     try {
-      return (await vercel.getCredential(userId)).state;
+      return (await client.getCredential(userId)).state;
     } catch {
       return "unavailable";
     }
@@ -94,6 +99,7 @@ function build(): Runtime {
     analysis,
     components,
     vercel,
+    render,
     providerDeployments,
     deliveries,
     executor,

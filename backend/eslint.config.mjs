@@ -12,6 +12,7 @@ export default defineConfig([
     "data/**",
     // A separate service with its own toolchain.
     "vercel_integration/**",
+    "render_integration/**",
     "next-env.d.ts",
   ]),
   {

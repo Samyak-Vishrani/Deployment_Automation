@@ -5,6 +5,7 @@ import type { EventsService } from "@/lib/events/events.service";
 import type { PushPayload } from "@/lib/deployments/push-payload";
 import { lifecycleStatus, ProviderDeploymentsService } from "./provider-deployments.service";
 import type { ProviderLogSink } from "./provider-log-sink";
+import type { RenderServiceClient } from "./render-service.client";
 import type { VercelServiceClient } from "./vercel-service.client";
 
 const SHA = "d".repeat(40);
@@ -21,6 +22,7 @@ const project = {
   branch: "main",
   defaultBranch: "main",
   installationId: "inst1",
+  envVars: { GREETING: "hi", "bad-key": "dropped" } as Record<string, string>,
 };
 
 const component = {
@@ -35,6 +37,7 @@ const component = {
   startCmd: null,
   outputDir: null,
   nodeVersion: null,
+  healthCheckPath: null as string | null,
   provider: "vercel",
   providerResourceId: null as string | null,
   url: null as string | null,
@@ -89,6 +92,12 @@ function setup() {
     cancelDeployment: vi.fn(async () => ({})),
     getDeployment: vi.fn(),
   };
+  const render = {
+    getCredential: vi.fn(async () => ({ state: "connected" })),
+    startDeployment: vi.fn(async (_request: unknown) => ({})),
+    cancelDeployment: vi.fn(async () => ({})),
+    getDeployment: vi.fn(),
+  };
   const sink = {
     write: vi.fn(async () => undefined),
     section: vi.fn(async () => undefined),
@@ -99,10 +108,10 @@ function setup() {
     prisma as unknown as PrismaClient,
     github as never,
     events as unknown as EventsService,
-    vercel as unknown as VercelServiceClient,
+    { vercel: vercel as unknown as VercelServiceClient, render: render as unknown as RenderServiceClient },
     sink as unknown as ProviderLogSink,
   );
-  return { service, prisma, github, events, vercel, sink, deployments, components };
+  return { service, prisma, github, events, vercel, render, sink, deployments, components };
 }
 
 describe("lifecycleStatus", () => {
@@ -154,8 +163,52 @@ describe("deployComponent", () => {
   });
 
   it("refuses providers that arrive in later phases", async () => {
-    ctx.components.set("c1", { ...component, provider: "render" });
-    await expect(ctx.service.deployComponent("u1", "p1", "c1", { trigger: "manual" })).rejects.toThrow(/Phase 7/);
+    ctx.components.set("c1", { ...component, kind: "database", provider: "neon" });
+    await expect(ctx.service.deployComponent("u1", "p1", "c1", { trigger: "manual" })).rejects.toThrow(/Phase 8/);
+  });
+
+  it("sends a Render deploy the start command, health path and project env vars, but no GitHub token", async () => {
+    ctx.components.set("c1", {
+      ...component,
+      kind: "backend",
+      name: "api",
+      rootDir: "backend",
+      framework: "express",
+      startCmd: "npm start",
+      healthCheckPath: "/health",
+      provider: "render",
+    });
+    const deployment = await ctx.service.deployComponent("u1", "p1", "c1", { trigger: "manual" });
+
+    expect(deployment).toMatchObject({ provider: "render", commitMessage: "Deploy api to Render" });
+    expect(ctx.render.startDeployment).toHaveBeenCalledWith({
+      deploymentId: deployment!.id,
+      userId: "u1",
+      component: expect.objectContaining({ id: "c1", startCmd: "npm start", healthCheckPath: "/health" }),
+      repo: { fullName: "me/shop", branch: "main" },
+      commitSha: SHA,
+      envVars: [{ key: "GREETING", value: "hi" }],
+    });
+    expect(ctx.render.startDeployment.mock.calls[0][0]).not.toHaveProperty("githubToken");
+    expect(ctx.github.getInstallationToken).not.toHaveBeenCalled();
+    expect(ctx.vercel.startDeployment).not.toHaveBeenCalled();
+  });
+
+  it("asks for a Render account with Render's own error code", async () => {
+    ctx.components.set("c1", { ...component, kind: "backend", provider: "render" });
+    ctx.render.getCredential.mockResolvedValueOnce({ state: "invalid" });
+    await expect(ctx.service.deployComponent("u1", "p1", "c1", { trigger: "manual" })).rejects.toMatchObject({
+      status: 412,
+      code: "render_key_invalid",
+    });
+  });
+
+  it("cancels through the provider's own service", async () => {
+    ctx.components.set("c1", { ...component, kind: "backend", provider: "render" });
+    const deployment = await ctx.service.deployComponent("u1", "p1", "c1", { trigger: "manual" });
+    await expect(ctx.service.cancel(deployment!)).resolves.toEqual({ status: "cancelling" });
+    expect(ctx.render.cancelDeployment).toHaveBeenCalledWith(deployment!.id);
+    expect(ctx.vercel.cancelDeployment).not.toHaveBeenCalled();
   });
 
   it("marks the row failed when the integration service cannot be reached", async () => {
@@ -221,6 +274,16 @@ describe("applyBatch", () => {
     await ctx.service.applyBatch({ deploymentId: id, seq: 1, events: [{ type: "terminal", status: "cancelled" }] });
     expect(ctx.components.get("c1")).toMatchObject({ status: "live" });
     expect(ctx.deployments.get(id)).toMatchObject({ status: "cancelled" });
+  });
+
+  it("refuses a batch from another provider's service", async () => {
+    await expect(
+      ctx.service.applyBatch({ deploymentId: id, seq: 1, events: [{ type: "terminal", status: "failed" }] }, "render"),
+    ).rejects.toMatchObject({ status: 403, code: "wrong_provider" });
+    expect(ctx.deployments.get(id)).toMatchObject({ status: "queued" });
+    await expect(ctx.service.applyBatch({ deploymentId: id, seq: 1, events: [] }, "vercel")).resolves.toEqual({
+      applied: true,
+    });
   });
 
   it("answers 404 for an unknown deployment so the service stops retrying", async () => {

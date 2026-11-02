@@ -10,7 +10,7 @@ Docker, …) through the same provider interface.
 
 Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not started
 
-**Status as of 2026-11-02:** Phases 3 and 4 done. Phase 5 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_5.md`); it needs its migration applied and a manual check. Phase 6 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_6.md`): Vercel is a separate service in `backend/vercel_integration`. It needs its secrets, its migrations applied, the API spike and a live deploy check.
+**Status as of 2026-11-03:** Phases 3–6 done (Vercel deploys verified live on 2026-11-02). Phase 7 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_7.md`): Render is a separate service in `backend/render_integration`. It needs its secrets, its migrations applied, Render connected to GitHub, the API spike and a live deploy check.
 
 ---
 
@@ -23,8 +23,8 @@ Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not star
 | 3 | GitHub integration | ✅ | GitHub App JWT → installation token, repo metadata, branch check, webhook HMAC + dedupe |
 | 4 | Repository analysis | ✅ | Source fetch (tarball → extract); detection, build settings, DB hints and snapshots added on top |
 | 5 | Deployment configuration | 🟡 | Code complete; migration not applied and the manual checks not yet run |
-| 6 | Vercel integration | 🟡 | Code complete as its own service (`backend/vercel_integration`); needs secrets, migrations, the API spike and a live check |
-| 7 | Render integration | ⬜ | — |
+| 6 | Vercel integration | ✅ | Own service (`backend/vercel_integration`); a Next.js subfolder deployed live on `*.vercel.app` |
+| 7 | Render integration | 🟡 | Code complete as its own service (`backend/render_integration`); needs secrets, migrations, the API spike and a live check |
 | 8 | Neon integration | ⬜ | — |
 | 9 | Environment variables | 🟡 | `envVars` column, values never returned by the API, log redaction; encryption helper (`secret-box.ts`) exists but env vars are not encrypted yet |
 | 10 | Dashboard | 🟡 | Project list, status badges, live `/events` SSE |
@@ -219,11 +219,11 @@ plan run against a real repo.
   toggle, Save, a pre-flight panel and a **Deploy** button that stays disabled until pre-flight
   passes. Connecting a repository now lands here, and the project page shows a Components summary.
 - ✅ Pre-flight checks (`GET …/preflight`): root dir exists, `.env.example` keys have values, and at
-  least one component. The Vercel credential check is real since Phase 6; Render and Neon report `pending` until Phases 7 and 8.
+  least one component. The Vercel (Phase 6) and Render (Phase 7) credential checks are real; Neon reports `pending` until Phase 8.
 
 ---
 
-## Phase 6 — Vercel Integration 🟡
+## Phase 6 — Vercel Integration ✅
 
 **Goal:** the frontend component deploys to the user's Vercel account.
 
@@ -268,27 +268,62 @@ deploy events back to `/api/internal/provider-events`, HMAC-signed. Details:
   - the build page links to Vercel and the live site.
 - ✅ Push-to-deploy for Vercel components already deployed once (watch path = `rootDir/**`)
 - ⬜ API spike against a real Vercel account (`npm run spike`), then tighten `isGitAccessError` from the recorded fixtures
-- ⬜ Live check: a Next.js subfolder goes live on `*.vercel.app`
+- ✅ Live check: a Next.js subfolder goes live on `*.vercel.app` (2026-11-02)
 
 **Done when:** clicking Deploy puts a Next.js subfolder live on a `*.vercel.app` URL, and it shows in our dashboard.
 
 ---
 
-## Phase 7 — Render Integration ⬜
+## Phase 7 — Render Integration 🟡
 
 **Goal:** the backend component deploys to the user's Render account.
 
-- ⬜ Credential: Render API key in `/settings`, validated with `GET /v1/owners`
-- ⬜ `RenderProvider`:
-  - Needs the user's Render account linked to GitHub (checked at pre-flight, with a clear error if not)
-  - `ensureResource`: `POST /v1/services` (type `web_service`, `repo`, `branch`, `rootDir`,
-    `buildCommand`, `startCommand`, runtime `node`, plan `free`, `autoDeploy: no`)
-  - `deploy`: `POST /v1/services/:id/deploys` with `commitId`
+Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma, Postgres schema
+`render`, port 3003), mirroring the Vercel one with its **own** secrets: the backend calls it with
+`RENDER_SERVICE_TOKEN`; it posts deploy events to `/api/internal/provider-events` tagged
+`x-orbitops-provider: render` and signed with `RENDER_CALLBACK_SECRET`. Details:
+`Plans/Plans_Remaining/PLAN_PHASE_7.md` and `backend/render_integration/README.md`.
+
+- ✅ **Credentials:**
+  - The user pastes a Render API key in Settings → Integrations. It is validated with
+    `GET /v1/owners` and stored sealed in the service's `RenderCredential`.
+  - Workspace picker (locked once a service exists).
+  - Region and plan defaults for new services: Oregon / Free.
+- ✅ `RenderProvider` (`render_integration/src/render/render.provider.ts`):
+  - Needs the user's Render account connected to GitHub (no upload fallback). Pre-flight says so,
+    and a repo Render cannot read fails with `render_repo_access` and the fix.
+  - `ensureService`:
+    - `POST /v1/services`: `web_service`, `repo`, `branch`, `rootDir`, runtime from the framework,
+      build = install && build, start command, `healthCheckPath`, plan/region from Settings, env
+      vars, `autoDeployTrigger: "off"`.
+    - PATCHes only changed settings and recreates a service deleted on Render.
+  - Env vars: the project's env vars + `NODE_VERSION`, upserted per key only when changed. Keys we
+    set before and are gone are deleted; vars added on Render's dashboard are kept.
+  - `deploy`: the deploy Render starts on creation is adopted if it builds our SHA, else cancelled.
+    Then `POST /v1/services/:id/deploys` with `commitId`.
   - `getStatus`: `GET /v1/services/:id/deploys/:deployId` → normalised
-    (`created/build_in_progress/update_in_progress/live/build_failed/update_failed/canceled`)
-  - `getLogs`: `GET /v1/logs?resource=:id` (filtered to the deploy window)
-  - `setEnv`: `PUT /v1/services/:id/env-vars`
-- ⬜ Health: take Render's `live` as success, plus an optional `GET <url>/health` probe
+    (`created/queued` → queued, `build_in_progress` → building, `update_in_progress` → deploying,
+    `live/deactivated` → live, `*_failed` → failed, `canceled` → cancelled).
+  - `getLogs`: `GET /v1/logs?resource=:id&type=build&type=app`, from this deploy's start, paged.
+  - `cancel`, `rollback` (Phase 11 hook), `setEnv` (Phase 9 hook), `destroy` (not called).
+- ✅ Health: Render's `live` is success. Then `GET <url><healthCheckPath>` is tried for ~90 s (free
+  instances cold-start); it is logged and never fails the deploy.
+- ✅ Failure hints from the log: no open port (listen on `process.env.PORT`), no repo access,
+  missing module, out of memory.
+- ✅ Main backend:
+  - one integration-service client per provider;
+  - `ProviderDeploymentsService` routes by `component.provider`;
+  - callbacks are verified with the sender's own secret, and must match the deployment's provider;
+  - `Component.healthCheckPath`;
+  - pre-flight checks the runtime and start command;
+  - push-to-deploy covers Render components.
+- ✅ UI:
+  - Render card in Settings (API key, workspace, region, plan);
+  - **Deploy to Render** and **Health check path** on the Backend card;
+  - **Open api** on the project page.
+- ⬜ API spike against a real Render account (`npm run spike`); confirm the log labels and the
+  repo-access error text
+- ⬜ Live check: a NestJS/Express subfolder goes live on `*.onrender.com`
 
 **Done when:** a NestJS subfolder is live on `*.onrender.com`, and status moves through queued → building → live.
 

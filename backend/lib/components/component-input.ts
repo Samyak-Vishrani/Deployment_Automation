@@ -27,6 +27,8 @@ export interface ComponentInput {
   startCmd: string | null;
   outputDir: string | null;
   nodeVersion: string | null;
+  /** Path the provider checks once the service is up, e.g. "/health". Backends only. */
+  healthCheckPath: string | null;
   provider: ProviderId;
   analysisComponentId: string | null;
 }
@@ -44,6 +46,7 @@ const COMPONENT_KEYS = [
   "startCmd",
   "outputDir",
   "nodeVersion",
+  "healthCheckPath",
   "provider",
   "analysisComponentId",
 ] as const;
@@ -101,6 +104,16 @@ function optionalPath(
   return value === undefined || value === null ? value : relativePath(value, key);
 }
 
+/** A URL path on the deployed service: starts with "/", no spaces, no query string. */
+function optionalHealthPath(body: Record<string, unknown>): string | null | undefined {
+  const value = nullableString(body, "healthCheckPath", 200);
+  if (value === undefined || value === null) return value;
+  if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(value)) {
+    throw badRequest('healthCheckPath must be a path starting with "/", like "/health".');
+  }
+  return value;
+}
+
 function parseKind(value: unknown, at: string): ComponentKind {
   if (typeof value !== "string" || !COMPONENT_KINDS.includes(value as ComponentKind)) {
     throw badRequest(`${at}kind must be one of ${COMPONENT_KINDS.join(", ")}.`);
@@ -128,7 +141,7 @@ export function assertProviderAllowed(kind: ComponentKind, provider: ProviderId,
 /** A database is provisioned, not built: commands on one are a mistake, not something to ignore. */
 function assertNoCommands(kind: ComponentKind, fields: Partial<Record<string, string | null>>, at: string) {
   if (kind !== "database") return;
-  const set = [...COMMAND_KEYS, "outputDir" as const].filter((key) => fields[key]);
+  const set = [...COMMAND_KEYS, "outputDir" as const, "healthCheckPath" as const].filter((key) => fields[key]);
   if (set.length > 0) {
     throw badRequest(`${at}A database component has no ${set.join(", ")}.`);
   }
@@ -162,6 +175,7 @@ function parseComponent(body: unknown, index: number): ComponentInput {
     startCmd: nullableString(raw, "startCmd", MAX_COMMAND) ?? null,
     outputDir: optionalPath(raw, "outputDir") ?? null,
     nodeVersion: nullableString(raw, "nodeVersion", 100) ?? null,
+    healthCheckPath: optionalHealthPath(raw) ?? null,
   };
   assertNoCommands(kind, fields, at);
 
@@ -227,6 +241,7 @@ export function parseUpdateComponent(body: unknown): UpdateComponentInput {
     ...optional("startCmd", nullableString(raw, "startCmd", MAX_COMMAND)),
     ...optional("outputDir", optionalPath(raw, "outputDir")),
     ...optional("nodeVersion", nullableString(raw, "nodeVersion", 100)),
+    ...optional("healthCheckPath", optionalHealthPath(raw)),
     ...(raw.provider !== undefined && { provider: parseProvider(raw.provider, "") }),
   };
 }

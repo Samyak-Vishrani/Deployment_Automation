@@ -7,7 +7,7 @@
  */
 
 import type { ComponentKind, ProviderId } from "@prisma/client";
-import { CAN_DEPLOY, PROVIDER_LABEL, PROVIDER_PHASE } from "./provider-rules";
+import { CAN_DEPLOY, PROVIDER_LABEL, PROVIDER_PHASE, RENDER_FRAMEWORKS } from "./provider-rules";
 
 export type CheckStatus = "pass" | "fail" | "pending";
 
@@ -41,6 +41,9 @@ export type PreflightComponent = {
   name: string;
   rootDir: string;
   provider: ProviderId;
+  /** Read by the provider-specific checks (Render needs both). */
+  framework?: string | null;
+  startCmd?: string | null;
 };
 
 export type PreflightProject = {
@@ -108,6 +111,7 @@ export async function runPreflight(
     if (component.kind === "database") continue;
     checks.push(rootDirCheck(component, tree, folders, treeError));
     checks.push(await envCheck(component, files, filled, deps, treeError));
+    if (component.provider === "render") checks.push(...renderChecks(component));
   }
 
   const providers = [...new Set(components.map((c) => c.provider))];
@@ -216,9 +220,21 @@ async function credentialCheck(
 
   switch (await deps.credentialState(userId, provider)) {
     case "connected":
-      return { ...base, status: "pass", message: `${label} account connected.` };
+      return {
+        ...base,
+        status: "pass",
+        message:
+          provider === "render"
+            ? "Render account connected. Render builds from GitHub itself, so it must also be connected to GitHub " +
+              "with access to this repository (dashboard.render.com → Account Settings → Git)."
+            : `${label} account connected.`,
+      };
     case "invalid":
-      return { ...base, status: "fail", message: `${label} rejected the saved token. Reconnect ${label} in Settings.` };
+      return {
+        ...base,
+        status: "fail",
+        message: `${label} rejected the saved ${provider === "render" ? "API key" : "token"}. Reconnect ${label} in Settings.`,
+      };
     case "unavailable":
       return {
         ...base,
@@ -228,6 +244,38 @@ async function credentialCheck(
     default:
       return { ...base, status: "fail", message: `Connect ${label} in Settings to deploy there.` };
   }
+}
+
+/**
+ * What Render needs that other providers do not: a runtime it can tell from
+ * the framework, and (for a native runtime) a start command.
+ */
+function renderChecks(component: PreflightComponent): PreflightCheck[] {
+  const framework = component.framework?.trim().toLowerCase() ?? "";
+  const runtimeKnown = RENDER_FRAMEWORKS.has(framework);
+  const checks: PreflightCheck[] = [
+    {
+      id: `runtime:${component.id}`,
+      componentId: component.id,
+      status: runtimeKnown ? "pass" : "fail",
+      message: runtimeKnown
+        ? `${component.name}: Render can run ${framework}.`
+        : `${component.name}: set a framework Render can run (e.g. express, nestjs, fastapi, docker); ` +
+          `"${component.framework ?? "none"}" is not one.`,
+    },
+  ];
+  if (framework !== "docker") {
+    const hasStart = Boolean(component.startCmd?.trim());
+    checks.push({
+      id: `start-cmd:${component.id}`,
+      componentId: component.id,
+      status: hasStart ? "pass" : "fail",
+      message: hasStart
+        ? `${component.name}: starts with "${component.startCmd!.trim()}".`
+        : `${component.name}: add a start command; Render needs one to run the service (e.g. "npm start").`,
+    });
+  }
+  return checks;
 }
 
 /** Variable names declared in a .env.example: `KEY=...` or `export KEY=...`, comments skipped. */

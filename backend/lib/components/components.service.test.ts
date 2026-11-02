@@ -84,6 +84,7 @@ const input = (overrides: Partial<ComponentInput> = {}): ComponentInput => ({
   startCmd: null,
   outputDir: ".next",
   nodeVersion: null,
+  healthCheckPath: null,
   provider: "vercel",
   analysisComponentId: null,
   ...overrides,

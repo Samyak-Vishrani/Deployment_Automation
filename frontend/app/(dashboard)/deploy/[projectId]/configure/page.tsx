@@ -40,11 +40,21 @@ type Draft = {
   startCmd: string;
   outputDir: string;
   nodeVersion: string;
+  healthCheckPath: string;
   analysisComponentId: string | null;
   evidence: string[];
 };
 
-type TextField = "name" | "rootDir" | "framework" | "installCmd" | "buildCmd" | "startCmd" | "outputDir" | "nodeVersion";
+type TextField =
+  | "name"
+  | "rootDir"
+  | "framework"
+  | "installCmd"
+  | "buildCmd"
+  | "startCmd"
+  | "outputDir"
+  | "nodeVersion"
+  | "healthCheckPath";
 
 const KIND_TONE: Record<string, string> = {
   frontend: "status-blue",
@@ -81,6 +91,7 @@ function toDraft(component: DeployComponent | ProposedComponent): Draft {
     startCmd: component.startCmd ?? "",
     outputDir: component.outputDir ?? "",
     nodeVersion: component.nodeVersion ?? "",
+    healthCheckPath: component.healthCheckPath ?? "",
     analysisComponentId: component.analysisComponentId,
     evidence: "evidence" in component ? component.evidence : [],
   };
@@ -101,6 +112,8 @@ function toFields(draft: Draft): ComponentFields {
     startCmd: database ? null : orNull(draft.startCmd),
     outputDir: database ? null : orNull(draft.outputDir),
     nodeVersion: database ? null : orNull(draft.nodeVersion),
+    // Only a backend has a health check: Render uses it to decide a deploy is live.
+    healthCheckPath: kind === "backend" ? orNull(draft.healthCheckPath) : null,
     provider: PROVIDER_FOR_KIND[kind],
     analysisComponentId: draft.analysisComponentId,
   };
@@ -117,6 +130,7 @@ const emptyDraft = (kind: ComponentKind | null): Draft => ({
   startCmd: "",
   outputDir: "",
   nodeVersion: "",
+  healthCheckPath: "",
   analysisComponentId: null,
   evidence: [],
 });
@@ -594,8 +608,31 @@ function ComponentCard({
                   placeholder={placeholder}
                   spellCheck={false}
                 />
+                {field === "startCmd" && provider === "render" ? (
+                  <p className="field-hint">Required: Render runs this to start the service. It must listen on process.env.PORT.</p>
+                ) : null}
+                {field === "outputDir" && provider === "render" ? (
+                  <p className="field-hint">Not used by Render: the start command runs the app.</p>
+                ) : null}
               </label>
             ))}
+
+            {draft.kind === "backend" ? (
+              <label className="field-label" htmlFor={id("healthCheckPath")}>
+                Health check path
+                <input
+                  id={id("healthCheckPath")}
+                  value={draft.healthCheckPath}
+                  onChange={(e) => onChange({ healthCheckPath: e.target.value })}
+                  placeholder="/health"
+                  spellCheck={false}
+                />
+                <p className="field-hint">
+                  Optional. Render waits for this path to answer before calling a deploy live, and OrbitOps checks it
+                  afterwards.
+                </p>
+              </label>
+            ) : null}
           </>
         )}
       </div>

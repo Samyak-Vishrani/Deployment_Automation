@@ -9,6 +9,7 @@ import type {
   DeployProject,
   DeployRun,
   PreflightResult,
+  ConnectableProvider,
   ProjectAnalysis,
   ProviderCredential,
   RepositoryList,
@@ -80,14 +81,21 @@ export const listComponentRuns = (projectId: string, componentId: string) =>
 export const listProviderCredentials = () =>
   api.get<ProviderCredential[]>("/api/providers/credentials", withSession);
 
-/** Validates the token with the provider, then stores it encrypted on the backend. */
-export const saveProviderToken = (provider: "vercel", token: string) =>
+/** Validates the token (Vercel) or API key (Render) with the provider, then stores it encrypted. */
+export const saveProviderToken = (provider: ConnectableProvider, token: string) =>
   api.put<ProviderCredential>(`/api/providers/${provider}/credential`, { token }, withSession);
 
+/** Vercel: the team new projects are created in (null = personal scope). */
 export const setProviderTeam = (provider: "vercel", teamId: string | null) =>
   api.patch<ProviderCredential>(`/api/providers/${provider}/credential`, { teamId }, withSession);
 
-export const disconnectProvider = (provider: "vercel") =>
+/** Render: the workspace, and the region and plan new services are created with. */
+export const setProviderPreferences = (
+  provider: "render",
+  prefs: { ownerId?: string; region?: string; plan?: string },
+) => api.patch<ProviderCredential>(`/api/providers/${provider}/credential`, prefs, withSession);
+
+export const disconnectProvider = (provider: ConnectableProvider) =>
   api.delete<{ deleted: boolean }>(`/api/providers/${provider}/credential`, withSession);
 
 /** Repositories the user can connect, read live from GitHub with their own token. */

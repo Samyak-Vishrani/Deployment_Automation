@@ -49,8 +49,8 @@ describe("runPreflight", () => {
       message: "Connect Vercel in Settings to deploy there.",
     });
     expect(byId(result, "credential:render")).toMatchObject({
-      status: "pending",
-      message: "Deploying to Render arrives in Phase 7.",
+      status: "fail",
+      message: "Connect Render in Settings to deploy there.",
     });
     expect(result.ok).toBe(false);
     expect(result.deployable).toEqual({ c1: false, c2: false });
@@ -62,10 +62,38 @@ describe("runPreflight", () => {
     expect(result.deployable).toEqual({ c1: true });
   });
 
-  it("makes a connected Vercel component deployable while Render is still pending", async () => {
+  it("keeps a Render backend undeployable until Render can tell how to run it, and Neon pending", async () => {
     const result = await runPreflight(project, [web, api, db], deps({ credentialState: async () => "connected" }));
     expect(result.ok).toBe(false);
     expect(result.deployable).toEqual({ c1: true, c2: false, c3: false });
+    expect(byId(result, "runtime:c2")?.status).toBe("fail");
+    expect(byId(result, "credential:neon")).toMatchObject({ status: "pending", message: "Deploying to Neon arrives in Phase 8." });
+  });
+
+  it("makes a Render backend deployable once its framework and start command are set", async () => {
+    const ready = { ...api, framework: "express", startCmd: "npm start" };
+    const result = await runPreflight(project, [web, ready], deps({ credentialState: async () => "connected" }));
+    expect(result.deployable).toEqual({ c1: true, c2: true });
+    expect(result.ok).toBe(true);
+    expect(byId(result, "credential:render")?.message).toMatch(/connected to GitHub/);
+  });
+
+  it("asks a Render backend for a start command, except a Docker one", async () => {
+    const noStart = await runPreflight(
+      project,
+      [{ ...api, framework: "nestjs", startCmd: "  " }],
+      deps({ credentialState: async () => "connected" }),
+    );
+    expect(byId(noStart, "start-cmd:c2")).toMatchObject({ status: "fail" });
+    expect(byId(noStart, "start-cmd:c2")?.message).toMatch(/add a start command/);
+
+    const docker = await runPreflight(
+      project,
+      [{ ...api, framework: "docker", startCmd: null }],
+      deps({ credentialState: async () => "connected" }),
+    );
+    expect(byId(docker, "start-cmd:c2")).toBeUndefined();
+    expect(docker.deployable).toEqual({ c2: true });
   });
 
   it("blocks a component whose own checks fail", async () => {

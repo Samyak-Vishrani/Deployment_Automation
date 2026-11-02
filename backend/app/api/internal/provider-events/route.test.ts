@@ -12,13 +12,19 @@ vi.mock("@/lib/runtime", () => ({
 import { HttpError } from "@/lib/api/http-error";
 import { POST } from "./route";
 
-function deliver(body: unknown, secret = SECRET) {
+const RENDER_SECRET = "render_callback_secret_value_for_tests_0";
+
+function deliver(body: unknown, secret = SECRET, provider?: string) {
   const raw = JSON.stringify(body);
   const signature = `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`;
   return POST(
     new Request("http://localhost/api/internal/provider-events", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-orbitops-signature": signature },
+      headers: {
+        "content-type": "application/json",
+        "x-orbitops-signature": signature,
+        ...(provider ? { "x-orbitops-provider": provider } : {}),
+      },
       body: raw,
     }),
   );
@@ -28,6 +34,7 @@ const batch = { deploymentId: "dep1", seq: 1, events: [{ type: "status", provide
 
 beforeEach(() => {
   vi.stubEnv("INTERNAL_CALLBACK_SECRET", SECRET);
+  vi.stubEnv("RENDER_CALLBACK_SECRET", RENDER_SECRET);
   mockApply.mockReset().mockResolvedValue({ applied: true });
 });
 
@@ -40,7 +47,25 @@ describe("POST /api/internal/provider-events", () => {
     const response = await deliver(batch);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ received: true, applied: true });
-    expect(mockApply).toHaveBeenCalledWith(batch);
+    // No provider header: the Vercel service, verified with its secret.
+    expect(mockApply).toHaveBeenCalledWith(batch, "vercel");
+  });
+
+  it("verifies a Render batch with Render's own secret and says it came from Render", async () => {
+    const response = await deliver(batch, RENDER_SECRET, "render");
+    expect(response.status).toBe(200);
+    expect(mockApply).toHaveBeenCalledWith(batch, "render");
+  });
+
+  it("rejects a Render batch signed with the Vercel secret, and an unknown provider", async () => {
+    expect((await deliver(batch, SECRET, "render")).status).toBe(401);
+    expect((await deliver(batch, SECRET, "heroku")).status).toBe(401);
+    expect(mockApply).not.toHaveBeenCalled();
+  });
+
+  it("passes a provider mismatch through as 403", async () => {
+    mockApply.mockRejectedValueOnce(new HttpError("Deployment dep1 is not a Render deployment.", 403, "wrong_provider"));
+    expect((await deliver(batch, RENDER_SECRET, "render")).status).toBe(403);
   });
 
   it("rejects a batch signed with another secret", async () => {

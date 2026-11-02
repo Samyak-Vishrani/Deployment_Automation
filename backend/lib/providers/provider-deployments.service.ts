@@ -7,6 +7,7 @@ import {
   type DeploymentTrigger,
   type PrismaClient,
   type Project,
+  type ProviderId,
 } from "@prisma/client";
 import { badRequest, HttpError, notFound } from "@/lib/api/http-error";
 import { PROVIDER_LABEL } from "@/lib/components/provider-rules";
@@ -16,8 +17,10 @@ import type { EventsService } from "@/lib/events/events.service";
 import type { GithubAppService } from "@/lib/github/github-app.service";
 import type { ParsedRepo } from "@/lib/github/repo-url";
 import type { ProviderLogSink } from "./provider-log-sink";
-import { SERVICE_UNAVAILABLE, type VercelServiceClient } from "./vercel-service.client";
-import type { EventBatch, ProviderEvent, ProviderStatus, VercelDeploymentView } from "./vercel-service.types";
+import { isServiceUnavailable } from "./integration-service.client";
+import type { RenderServiceClient } from "./render-service.client";
+import type { VercelServiceClient } from "./vercel-service.client";
+import type { EventBatch, ProviderEvent, ProviderStatus } from "./vercel-service.types";
 
 export interface DeployComponentOptions {
   trigger: DeploymentTrigger;
@@ -29,6 +32,34 @@ export interface DeployComponentOptions {
 }
 
 const TERMINAL: ReadonlySet<DeploymentStatus> = new Set(["success", "failed", "cancelled"]);
+
+/** One client per provider that deploys through its own integration service. */
+export interface ProviderClients {
+  vercel: VercelServiceClient;
+  render: RenderServiceClient;
+}
+
+export type IntegratedProvider = keyof ProviderClients;
+
+export const isIntegrated = (provider: ProviderId): provider is IntegratedProvider =>
+  provider === "vercel" || provider === "render";
+
+/** What reconciliation needs from either service's deployment view. */
+interface DeploymentStateView {
+  state: ProviderStatus;
+  url: string | null;
+  productionUrl?: string | null;
+  errorMessage: string | null;
+}
+
+/** The user-facing answer when a provider account is missing or rejected. */
+const CREDENTIAL_ERRORS: Record<IntegratedProvider, { missing: string; invalid: [string, string] }> = {
+  vercel: { missing: "vercel_not_connected", invalid: ["Vercel rejected the saved token.", "vercel_token_invalid"] },
+  render: { missing: "render_not_connected", invalid: ["Render rejected the saved API key.", "render_key_invalid"] },
+};
+
+/** What the provider calls the resource we create per component. */
+const RESOURCE_NOUN: Record<IntegratedProvider, string> = { vercel: "project", render: "service" };
 
 /** Provider progress → the five lifecycle values every screen already understands. */
 export function lifecycleStatus(status: ProviderStatus): DeploymentStatus {
@@ -49,10 +80,10 @@ export function lifecycleStatus(status: ProviderStatus): DeploymentStatus {
  * Deploys components to external providers through their integration service,
  * and applies the events those services report back.
  *
- * Today that is Vercel, via backend/vercel_integration. This class holds no
- * Vercel logic: it owns the parts that belong to this backend - ownership,
- * the GitHub App (commit SHA, installation token), the Deployment row, the log
- * file and the /events feed.
+ * Vercel (backend/vercel_integration) and Render (backend/render_integration)
+ * today. This class holds no provider logic: it owns the parts that belong to
+ * this backend - ownership, the GitHub App (commit SHA, installation token),
+ * the project's env vars, the Deployment row, the log file and the /events feed.
  */
 export class ProviderDeploymentsService {
   /** Serialises event batches per deployment, so a redelivery never interleaves. */
@@ -65,7 +96,7 @@ export class ProviderDeploymentsService {
       "getBranchHeadSha" | "getInstallationToken" | "resolveInstallationId" | "getRepoMetadata"
     >,
     private readonly events: EventsService,
-    private readonly vercel: VercelServiceClient,
+    private readonly clients: ProviderClients,
     private readonly sink: ProviderLogSink,
   ) {}
 
@@ -88,26 +119,26 @@ export class ProviderDeploymentsService {
     if (component.provider === "local_docker") {
       throw badRequest(`${component.name} deploys with local Docker; use "Deploy now" on the project page.`);
     }
-    if (component.provider !== "vercel") {
-      throw badRequest(
-        `Deploying to ${PROVIDER_LABEL[component.provider]} arrives in a later phase (Render: Phase 7, Neon: Phase 8).`,
-      );
+    const provider = component.provider;
+    if (!isIntegrated(provider)) {
+      throw badRequest(`Deploying to ${PROVIDER_LABEL[provider]} arrives in a later phase (Neon: Phase 8).`);
     }
+    const label = PROVIDER_LABEL[provider];
 
     const repo = repoOf(project);
     const branch = project.branch ?? project.defaultBranch;
     if (!branch) throw badRequest(`${project.name} has no branch to deploy.`);
 
-    const credential = await this.vercel.getCredential(userId);
+    const credential = await this.clients[provider].getCredential(userId);
     if (credential.state === "missing") {
-      throw new HttpError("Connect Vercel in Settings first.", 412, "vercel_not_connected");
+      throw new HttpError(`Connect ${label} in Settings first.`, 412, CREDENTIAL_ERRORS[provider].missing);
     }
     if (credential.state === "invalid") {
-      throw new HttpError("Vercel rejected the saved token. Reconnect Vercel in Settings.", 412, "vercel_token_invalid");
+      const [message, code] = CREDENTIAL_ERRORS[provider].invalid;
+      throw new HttpError(`${message} Reconnect ${label} in Settings.`, 412, code);
     }
 
     const installationId = project.installationId ?? (await this.github.resolveInstallationId(repo));
-    const repoId = project.repoId ?? (await this.github.getRepoMetadata(repo)).id;
     const commitSha = options.commitSha ?? (await this.github.getBranchHeadSha(repo, branch, installationId));
 
     let deployment: Deployment;
@@ -122,7 +153,7 @@ export class ProviderDeploymentsService {
           trigger: options.trigger,
           branch,
           commitSha,
-          commitMessage: options.commitMessage ?? `Deploy ${component.name} to ${PROVIDER_LABEL[component.provider]}`,
+          commitMessage: options.commitMessage ?? `Deploy ${component.name} to ${label}`,
           commitAuthor: options.commitAuthor ?? null,
           deliveryId: options.deliveryId ?? null,
         },
@@ -137,28 +168,52 @@ export class ProviderDeploymentsService {
     await this.sink.section(
       projectId,
       deployment.id,
-      `Queued: ${component.name} → ${PROVIDER_LABEL[component.provider]} (${repo.fullName}@${branch}, ${commitSha.slice(0, 7)})`,
+      `Queued: ${component.name} → ${label} (${repo.fullName}@${branch}, ${commitSha.slice(0, 7)})`,
     );
 
     try {
-      const githubToken = await this.github.getInstallationToken(installationId);
-      await this.vercel.startDeployment({
-        deploymentId: deployment.id,
-        userId,
-        component: {
-          id: component.id,
-          name: component.name,
-          rootDir: component.rootDir,
-          framework: component.framework,
-          installCmd: component.installCmd,
-          buildCmd: component.buildCmd,
-          outputDir: component.outputDir,
-          nodeVersion: component.nodeVersion,
-        },
-        repo: { fullName: repo.fullName, repoId, branch },
-        commitSha,
-        githubToken,
-      });
+      if (provider === "vercel") {
+        const repoId = project.repoId ?? (await this.github.getRepoMetadata(repo)).id;
+        // Only Vercel can need the source (its upload fallback); Render reads GitHub itself.
+        const githubToken = await this.github.getInstallationToken(installationId);
+        await this.clients.vercel.startDeployment({
+          deploymentId: deployment.id,
+          userId,
+          component: {
+            id: component.id,
+            name: component.name,
+            rootDir: component.rootDir,
+            framework: component.framework,
+            installCmd: component.installCmd,
+            buildCmd: component.buildCmd,
+            outputDir: component.outputDir,
+            nodeVersion: component.nodeVersion,
+          },
+          repo: { fullName: repo.fullName, repoId, branch },
+          commitSha,
+          githubToken,
+        });
+      } else {
+        await this.clients.render.startDeployment({
+          deploymentId: deployment.id,
+          userId,
+          component: {
+            id: component.id,
+            name: component.name,
+            rootDir: component.rootDir,
+            framework: component.framework,
+            installCmd: component.installCmd,
+            buildCmd: component.buildCmd,
+            startCmd: component.startCmd,
+            nodeVersion: component.nodeVersion,
+            healthCheckPath: component.healthCheckPath,
+          },
+          repo: { fullName: repo.fullName, branch },
+          commitSha,
+          // Phase 7 sends the project's env vars; Phase 9 swaps in encrypted per-component vars.
+          envVars: projectEnvVars(project),
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not start the deploy.";
       await this.finishLocally(deployment, "failed", message);
@@ -172,13 +227,20 @@ export class ProviderDeploymentsService {
     if (TERMINAL.has(deployment.status)) {
       return { status: `already ${deployment.status}` };
     }
+    if (!isIntegrated(deployment.provider)) {
+      throw badRequest("This deployment does not run through a provider integration.");
+    }
     try {
-      await this.vercel.cancelDeployment(deployment.id);
+      await this.clients[deployment.provider].cancelDeployment(deployment.id);
       return { status: "cancelling" };
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) {
         // The service never received it (it failed to start, or was down).
-        await this.finishLocally(deployment, "cancelled", "Cancelled before it reached Vercel.");
+        await this.finishLocally(
+          deployment,
+          "cancelled",
+          `Cancelled before it reached ${PROVIDER_LABEL[deployment.provider]}.`,
+        );
         return { status: "cancelled" };
       }
       throw error;
@@ -202,8 +264,10 @@ export class ProviderDeploymentsService {
    * arrive in order; one at or below the last applied seq is a redelivery and
    * is acknowledged without being applied again.
    */
-  applyBatch(batch: EventBatch): Promise<{ applied: boolean }> {
-    return this.withLock(batch.deploymentId, () => this.applyEvents(batch.deploymentId, batch.events, batch.seq));
+  applyBatch(batch: EventBatch, from?: IntegratedProvider): Promise<{ applied: boolean }> {
+    return this.withLock(batch.deploymentId, () =>
+      this.applyEvents(batch.deploymentId, batch.events, batch.seq, from),
+    );
   }
 
   private withLock<T>(deploymentId: string, task: () => Promise<T>): Promise<T> {
@@ -223,12 +287,18 @@ export class ProviderDeploymentsService {
     deploymentId: string,
     events: ProviderEvent[],
     seq: number | null,
+    from?: IntegratedProvider,
   ): Promise<{ applied: boolean }> {
     const deployment = await this.prisma.deployment.findUnique({
       where: { id: deploymentId },
       include: { component: true },
     });
     if (!deployment) throw notFound(`Deployment ${deploymentId} not found.`);
+    if (from && deployment.provider !== from) {
+      // A service may only report on its own provider's deployments: a leaked
+      // Render secret must not be able to rewrite a Vercel deploy, and vice versa.
+      throw new HttpError(`Deployment ${deploymentId} is not a ${PROVIDER_LABEL[from]} deployment.`, 403, "wrong_provider");
+    }
     if (seq !== null && seq <= deployment.providerEventSeq) return { applied: false };
 
     let current: Deployment = deployment;
@@ -274,7 +344,11 @@ export class ProviderDeploymentsService {
         if (component && component.providerResourceId !== event.providerResourceId) {
           await this.setComponent(component, { providerResourceId: event.providerResourceId });
         }
-        await this.sink.write(projectId, id, [`Vercel project: ${event.projectName} (${event.providerResourceId})`]);
+        await this.sink.write(projectId, id, [
+          `${PROVIDER_LABEL[deployment.provider]} ${
+            isIntegrated(deployment.provider) ? RESOURCE_NOUN[deployment.provider] : "resource"
+          }: ${event.projectName} (${event.providerResourceId})`,
+        ]);
         return deployment;
 
       case "deployment":
@@ -329,18 +403,26 @@ export class ProviderDeploymentsService {
     const rows = await this.prisma.deployment.findMany({
       where: { provider: { not: "local_docker" }, status: { in: ["queued", "running"] } },
     });
+    const unreachable = new Set<IntegratedProvider>();
     for (const row of rows) {
-      let view: VercelDeploymentView;
+      const provider = row.provider;
+      if (!isIntegrated(provider) || unreachable.has(provider)) continue;
+      let view: DeploymentStateView;
       try {
-        view = await this.vercel.getDeployment(row.id);
+        view = await this.clients[provider].getDeployment(row.id);
       } catch (error) {
         if (error instanceof HttpError && error.status === 404) {
-          await this.finishLocally(row, "failed", "The deploy never reached the Vercel integration service. Deploy again.");
+          await this.finishLocally(
+            row,
+            "failed",
+            `The deploy never reached the ${PROVIDER_LABEL[provider]} integration service. Deploy again.`,
+          );
           continue;
         }
-        if (error instanceof HttpError && error.code === SERVICE_UNAVAILABLE) {
-          console.warn(`[reconcile] Vercel integration unreachable; ${rows.length} provider deploy(s) left as they are.`);
-          return;
+        if (isServiceUnavailable(error)) {
+          console.warn(`[reconcile] ${PROVIDER_LABEL[provider]} integration unreachable; its deploys are left as they are.`);
+          unreachable.add(provider);
+          continue;
         }
         throw error;
       }
@@ -348,7 +430,7 @@ export class ProviderDeploymentsService {
         const terminal: ProviderEvent = {
           type: "terminal",
           status: view.state,
-          productionUrl: view.productionUrl,
+          productionUrl: view.productionUrl ?? view.url,
           errorMessage: view.errorMessage,
         };
         await this.withLock(row.id, () => this.applyEvents(row.id, [terminal], null)).catch((error: Error) =>
@@ -361,10 +443,10 @@ export class ProviderDeploymentsService {
   // ---------------------------------------------------------------- push --
 
   /**
-   * Push-to-deploy for provider components. We switch off Vercel's own
-   * deploy-on-push, so this is what redeploys a frontend when its folder
-   * changes. Only components that have been deployed once (they have a
-   * provider resource) are redeployed automatically.
+   * Push-to-deploy for provider components. Vercel's deploy-on-push and
+   * Render's auto-deploy are both switched off for what we create, so this is
+   * what redeploys a component when its folder changes. Only components that
+   * have been deployed once (they have a provider resource) are redeployed.
    */
   async handlePush(payload: PushPayload, deliveryId?: string): Promise<number> {
     const screened = screenPush(payload);
@@ -372,7 +454,9 @@ export class ProviderDeploymentsService {
 
     const projects = await this.prisma.project.findMany({
       where: { autoDeploy: true, repoId: screened.repoId, branch: screened.branch },
-      include: { deployComponents: { where: { provider: "vercel", providerResourceId: { not: null } } } },
+      include: {
+        deployComponents: { where: { provider: { in: ["vercel", "render"] }, providerResourceId: { not: null } } },
+      },
     });
     const files = changedFiles(payload);
     const info = commitInfo(payload);
@@ -417,6 +501,14 @@ export class ProviderDeploymentsService {
     Object.assign(component, data);
     this.events.projectChanged(component.projectId, "updated");
   }
+}
+
+/** The project's env vars as a list. Values travel only to the integration service, never to logs. */
+export function projectEnvVars(project: Pick<Project, "envVars">): Array<{ key: string; value: string }> {
+  const raw = (project.envVars ?? {}) as Record<string, unknown>;
+  return Object.entries(raw)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0]))
+    .map(([key, value]) => ({ key, value }));
 }
 
 function repoOf(project: Project): ParsedRepo {

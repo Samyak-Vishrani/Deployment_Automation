@@ -37,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
-    "vercel_integration"
+    "vercel_integration",
+    "render_integration"
   ]
 }

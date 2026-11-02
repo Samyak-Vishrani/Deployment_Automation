@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Toast } from "@/components/ui/Toast";
 import { listProviderCredentials } from "@/lib/deploy/client";
-import type { ProviderCredential } from "@/lib/deploy/types";
+import type { ConnectableProvider, ProviderCredential } from "@/lib/deploy/types";
 
 const tabs = [
   { label: "Workspace", icon: "layers" as const },
@@ -22,19 +22,27 @@ const descriptions: Record<string, string> = {
   Security: "Authentication and access boundaries for this workspace.",
 };
 
-const MISSING_VERCEL: ProviderCredential = { provider: "vercel", state: "missing" };
+const CONNECTABLE: ConnectableProvider[] = ["vercel", "render"];
+const LABELS: Record<ConnectableProvider, string> = { vercel: "Vercel", render: "Render" };
+const missing = (provider: ConnectableProvider): ProviderCredential => ({ provider, state: "missing" });
 
 export default function SettingsPage() {
   const { session } = useAuth();
   const [activeTab, setActiveTab] = useState("Workspace");
   const [toast, setToast] = useState("");
-  const [vercel, setVercel] = useState<ProviderCredential | null>(null);
+  const [credentials, setCredentials] = useState<Partial<Record<ConnectableProvider, ProviderCredential>>>({});
+  const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState("");
 
   const loadCredentials = useCallback(async () => {
     try {
-      const credentials = await listProviderCredentials();
-      setVercel(credentials.find((c) => c.provider === "vercel") ?? MISSING_VERCEL);
+      const list = await listProviderCredentials();
+      const next: Partial<Record<ConnectableProvider, ProviderCredential>> = {};
+      for (const provider of CONNECTABLE) {
+        next[provider] = list.find((c) => c.provider === provider) ?? missing(provider);
+      }
+      setCredentials(next);
+      setLoaded(true);
       setLoadError("");
     } catch (e) {
       setLoadError((e as Error).message);
@@ -126,30 +134,30 @@ export default function SettingsPage() {
                     <Icon name="x" size={14} />
                     <span>{loadError}</span>
                   </div>
-                ) : vercel ? (
-                  <ProviderCredentialCard
-                    credential={vercel}
-                    onChange={(next) => {
-                      setVercel(next ?? MISSING_VERCEL);
-                      setToast(next ? `Vercel connected as ${next.accountName}.` : "Vercel disconnected.");
-                    }}
-                  />
+                ) : loaded ? (
+                  CONNECTABLE.map((provider) => (
+                    <ProviderCredentialCard
+                      key={provider}
+                      provider={provider}
+                      credential={credentials[provider] ?? missing(provider)}
+                      onChange={(next) => {
+                        setCredentials((current) => ({ ...current, [provider]: next ?? missing(provider) }));
+                        setToast(
+                          next
+                            ? `${LABELS[provider]} saved (${next.accountName ?? "connected"}).`
+                            : `${LABELS[provider]} disconnected.`,
+                        );
+                      }}
+                    />
+                  ))
                 ) : (
                   <div className="setting-line">
                     <span className="setting-line-copy">
-                      <strong>Vercel</strong>
+                      <strong>Vercel and Render</strong>
                       <small>Checking…</small>
                     </span>
                   </div>
                 )}
-
-                <div className="setting-line">
-                  <span className="setting-line-copy">
-                    <strong>Render</strong>
-                    <small>Where backend components deploy. Arrives in Phase 7.</small>
-                  </span>
-                  <StatusPill status="pending">Phase 7</StatusPill>
-                </div>
                 <div className="setting-line">
                   <span className="setting-line-copy">
                     <strong>Neon</strong>

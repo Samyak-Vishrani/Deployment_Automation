@@ -2,7 +2,8 @@
 
 A developer connects a GitHub repository; a push to its branch builds a Docker image and replaces
 the running container, with the build log streamed live to the dashboard. From Phase 6, a
-frontend component can instead be deployed to the user's own Vercel account.
+frontend component can instead be deployed to the user's own Vercel account, and from Phase 7 a
+backend component to the user's own Render account.
 
 ## Architecture
 
@@ -20,6 +21,10 @@ Docker daemon             build + run each project's container on 127.0.0.1:5000
 Backend :3001  ⇄  Vercel integration :3002   backend/vercel_integration — its own service
                     ↓                          (Fastify + Prisma, Postgres schema "vercel")
                   Vercel REST API             projects, deploys, status, build logs
+
+Backend :3001  ⇄  Render integration :3003   backend/render_integration — its own service
+                    ↓                          (Fastify + Prisma, Postgres schema "render")
+                  Render REST API             web services, env vars, deploys, status, logs
 ```
 
 GitHub delivers pushes to a single App-level webhook at `POST /api/webhooks/github`.
@@ -30,6 +35,11 @@ with a shared `INTERNAL_SERVICE_TOKEN`; it posts deploy events back to
 tokens (encrypted), the Vercel project per component and its own deploy state in the `vercel`
 schema; the backend keeps the `Deployment` rows, the log files and the live `/events` feed. See
 `backend/vercel_integration/README.md`.
+
+The Render integration works the same way with its **own** secrets: the backend calls it with
+`RENDER_SERVICE_TOKEN`, and its events are signed with `RENDER_CALLBACK_SECRET` and tagged
+`x-orbitops-provider: render`, so neither service can report on the other's deployments. See
+`backend/render_integration/README.md`.
 
 ## Backend layout
 
@@ -44,9 +54,9 @@ backend/
     projects/[id]/analysis      latest analysis snapshot  ← phase 4
     repositories/               the user's repos and branches, read live from GitHub  ← phase 3
     auth/github/                sign-in through the GitHub App; also where installs land
-    projects/[id]/components/   configure components; [cid]/deploy deploys one to its provider  ← phase 5/6
-    providers/                  connect / disconnect provider accounts (proxied to the service)  ← phase 6
-    internal/provider-events    signed deploy events from the Vercel integration service  ← phase 6
+    projects/[id]/components/   configure components; [cid]/deploy deploys one to its provider  ← phase 5/6/7
+    providers/                  connect / disconnect Vercel and Render accounts (proxied to their services)  ← phase 6/7
+    internal/provider-events    signed deploy events from the integration services (secret per provider)  ← phase 6/7
   lib/
     github/github-app.service   App JWT → installation token, repo metadata, branch SHA, source tarball
     github/github.service       tree + file reads at a commit SHA  ← phase 4
@@ -59,7 +69,7 @@ backend/
     projects/                   port allocator, validation
     analysis/                   framework detection, build settings, database hints  ← phase 4
     components/                 component config, provider rules, pre-flight  ← phase 5
-    providers/                  Vercel-service client, provider deploys, callback handling  ← phase 6
+    providers/                  integration-service clients (Vercel, Render), provider deploys, callbacks  ← phase 6/7
     runtime.ts                  process-wide service graph + startup reconciliation
 ```
 
@@ -103,6 +113,16 @@ cp .env.example .env     # then fill in the secrets, see "Vercel setup"
 npm install
 npx prisma migrate deploy  # creates the "vercel" schema
 npm run dev              # :3002
+```
+
+Terminal 4 (Render deploys, Phase 7):
+
+```bash
+cd backend/render_integration
+cp .env.example .env     # then fill in the secrets, see "Render setup"
+npm install
+npx prisma migrate deploy  # creates the "render" schema
+npm run dev              # :3003
 ```
 
 ## GitHub App setup
@@ -159,13 +179,50 @@ To check how the real Vercel API answers for your account (step 0 of
 required variables are at the bottom of its `.env.example`. It creates one throwaway project and
 deletes it at the end.
 
+## Render setup
+
+Backend components deploy to the user's own Render account. The Render code is a separate service
+in `backend/render_integration`; the backend reaches it on `127.0.0.1:3003`.
+
+1. Generate two **new** shared secrets (not the Vercel ones) and put the same values in
+   `backend/.env` and `backend/render_integration/.env`:
+   - `RENDER_SERVICE_TOKEN`: the backend sends it on every call to the service.
+   - `RENDER_CALLBACK_SECRET`: signs the deploy events the service posts back.
+
+   Generate each with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+2. Set `ENCRYPTION_KEY` in `backend/render_integration/.env`, a key different from every other one.
+   It seals the users' Render API keys.
+3. Run `npx prisma migrate deploy` in `backend` (adds `Component.healthCheckPath`) and in
+   `backend/render_integration` (creates the `render` schema), then start the service (Terminal 4).
+4. **Connect Render to GitHub.** Render builds from GitHub itself, so in Render go to
+   **Account Settings → Git** (dashboard.render.com), connect GitHub and give Render access to the
+   repositories you deploy. There is no upload fallback as there is for Vercel.
+5. In the dashboard, go to **Settings → Integrations**. Paste a Render API key (create one at
+   <https://dashboard.render.com/u/settings#api-keys>), then pick the workspace, region and plan.
+   Free instances sleep after 15 minutes without traffic and take about a minute to wake.
+6. On a project's **Configure** page, the Backend card needs a framework Render can run
+   (express, nestjs, fastapi…) and a **start command**; the server must listen on
+   `process.env.PORT`. A **health check path** (e.g. `/health`) is optional.
+7. The project's env vars (set when connecting the repository) are sent to Render on every deploy;
+   values are never logged. Variables you add by hand on Render's dashboard are left alone.
+8. For services it creates, OrbitOps switches off Render's auto-deploy. Deploy from the dashboard;
+   once a component has been deployed, a push that changes its folder redeploys it.
+
+The Render API key is a credential, as are both shared secrets: keep them out of git.
+
+To check how the real Render API answers for your account (step 0 of
+`Plans/Plans_Remaining/PLAN_PHASE_7.md`), run `npm run spike` in `backend/render_integration`. The
+required variables are at the bottom of its `.env.example`. It creates one throwaway free service
+and deletes it at the end.
+
 ## Tests
 
 ```bash
-cd backend  && npm test        # 289 unit tests (analysis, detection, components, pre-flight, push filter, GitHub, auth, provider deploys)
+cd backend  && npm test        # 301 unit tests (analysis, detection, components, pre-flight, push filter, GitHub, auth, provider deploys)
 cd backend  && npm run test:e2e  # drives the real webhook route against a running backend
 cd frontend && npm test
 cd backend/vercel_integration && npm test   # Vercel provider, upload, credentials, outbox, runner, API
+cd backend/render_integration && npm test   # Render provider, env sync, credentials, outbox, runner, API
 ```
 
 The e2e script signs real HMAC payloads and asserts on the resulting database rows, so it covers
@@ -191,6 +248,9 @@ Backend (`backend/.env`):
 | `VERCEL_SERVICE_URL` | the Vercel integration service; default `http://127.0.0.1:3002` |
 | `INTERNAL_SERVICE_TOKEN` | shared with the service; sent on every call to it |
 | `INTERNAL_CALLBACK_SECRET` | shared with the service; verifies its deploy events |
+| `RENDER_SERVICE_URL` | the Render integration service; default `http://127.0.0.1:3003` |
+| `RENDER_SERVICE_TOKEN` | shared with the Render service only; sent on every call to it |
+| `RENDER_CALLBACK_SECRET` | shared with the Render service only; verifies its deploy events |
 
 Vercel integration (`backend/vercel_integration/.env`):
 
@@ -202,6 +262,17 @@ Vercel integration (`backend/vercel_integration/.env`):
 | `MAIN_API_URL` | the backend, for event callbacks; default `http://localhost:3001` |
 | `HOST` / `PORT` | default `127.0.0.1:3002`; keep it on loopback |
 | `DEPLOY_CONCURRENCY`, `VERCEL_POLL_INTERVAL_MS`, `VERCEL_DEPLOY_TIMEOUT_MIN` | optional tuning (8, 3000, 45) |
+
+Render integration (`backend/render_integration/.env`):
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | the same Postgres, with `?schema=render` |
+| `ENCRYPTION_KEY` | 32 bytes, base64; seals Render API keys; required in production; a key of its own |
+| `RENDER_SERVICE_TOKEN` / `RENDER_CALLBACK_SECRET` | the same values as in `backend/.env` |
+| `MAIN_API_URL` | the backend, for event callbacks; default `http://localhost:3001` |
+| `HOST` / `PORT` | default `127.0.0.1:3003`; keep it on loopback |
+| `DEPLOY_CONCURRENCY`, `RENDER_POLL_INTERVAL_MS`, `RENDER_DEPLOY_TIMEOUT_MIN` | optional tuning (8, 3000, 45) |
 
 Frontend (`frontend/.env`):
 

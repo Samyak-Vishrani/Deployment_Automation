@@ -265,6 +265,9 @@ model Component {
   startCmd            String?         @db.VarChar(500)
   outputDir           String?         @db.VarChar(500)
   nodeVersion         String?         @db.VarChar(100)
+  /// Path the provider checks once the service is up ("/health"). Backends only;
+  /// Render uses it to decide a deploy is live (Phase 7).
+  healthCheckPath     String?         @db.VarChar(200)
   provider            ProviderId
   /// The provider's id for this component (Vercel project, Render service,
   /// Neon project). Filled in by the provider phases.

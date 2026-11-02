@@ -121,6 +121,13 @@ export default function DeployProjectPage() {
   const componentNames = new Map(components.map((c) => [c.id, c.name]));
   // Components a provider is serving, frontends first: what "Open site" links to.
   const liveSites = components.filter((c) => c.url && c.provider !== "local_docker" && c.kind !== "database");
+  // "Open site" for a frontend, "Open api" for a backend; the name when two of a kind are live.
+  const openLabel = (component: DeployComponent) =>
+    liveSites.filter((c) => c.kind === component.kind).length > 1
+      ? component.name
+      : component.kind === "backend"
+        ? "api"
+        : "site";
 
   if (error && !project) {
     return (
@@ -171,7 +178,7 @@ export default function DeployProjectPage() {
                 rel="noreferrer"
                 title={`${component.name} on ${PROVIDER_LABEL[component.provider]}`}
               >
-                Open {liveSites.length > 1 ? component.name : "site"} <Icon name="external" size={13} />
+                Open {openLabel(component)} <Icon name="external" size={13} />
               </a>
             ))}
             {/* The local Docker container, only once one has actually been deployed. */}

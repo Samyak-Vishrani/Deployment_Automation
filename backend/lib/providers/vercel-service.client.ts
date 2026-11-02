@@ -1,4 +1,9 @@
-import { HttpError } from "@/lib/api/http-error";
+import type { HttpError } from "@/lib/api/http-error";
+import {
+  IntegrationServiceClient,
+  type IntegrationServiceConfig,
+  type IntegrationServiceInfo,
+} from "./integration-service.client";
 import type {
   VercelCredentialView,
   VercelDeployRequest,
@@ -6,20 +11,21 @@ import type {
 } from "./vercel-service.types";
 
 /**
- * Typed client for the vercel_integration service's internal API.
- *
- * Everything Vercel-specific lives in that service; this backend only
- * authenticates the user, checks ownership, and forwards with the user's id.
- * Errors come back in the same `{ error, message }` shape this API uses, so
- * they are re-thrown as HttpError and reach the browser unchanged.
+ * Typed client for the vercel_integration service's internal API
+ * (backend/vercel_integration, :3002). The HTTP plumbing is shared with the
+ * other integration services in integration-service.client.ts.
  */
 
 export const SERVICE_UNAVAILABLE = "vercel_service_unavailable";
 
-export interface VercelServiceConfig {
-  baseUrl: string;
-  token: string;
-}
+export type VercelServiceConfig = IntegrationServiceConfig;
+
+const INFO: IntegrationServiceInfo = {
+  label: "Vercel",
+  folder: "backend/vercel_integration",
+  unavailableCode: SERVICE_UNAVAILABLE,
+  tokenVar: "INTERNAL_SERVICE_TOKEN",
+};
 
 export function loadVercelServiceConfig(env: NodeJS.ProcessEnv = process.env): VercelServiceConfig {
   return {
@@ -29,20 +35,13 @@ export function loadVercelServiceConfig(env: NodeJS.ProcessEnv = process.env): V
 }
 
 export function serviceUnavailable(detail?: string): HttpError {
-  return new HttpError(
-    "The Vercel integration service is not running. Start it with `npm run dev` in backend/vercel_integration" +
-      (detail ? ` (${detail})` : "") +
-      ".",
-    503,
-    SERVICE_UNAVAILABLE,
-  );
+  return new IntegrationServiceClient(INFO, loadVercelServiceConfig).unavailable(detail);
 }
 
-export class VercelServiceClient {
-  constructor(
-    private readonly loadConfig: () => VercelServiceConfig = loadVercelServiceConfig,
-    private readonly timeoutMs = 15_000,
-  ) {}
+export class VercelServiceClient extends IntegrationServiceClient {
+  constructor(loadConfig: () => VercelServiceConfig = loadVercelServiceConfig, timeoutMs = 15_000) {
+    super(INFO, loadConfig, timeoutMs);
+  }
 
   getCredential(userId: string): Promise<VercelCredentialView> {
     return this.call("GET", `/users/${encodeURIComponent(userId)}/credential`);
@@ -74,58 +73,5 @@ export class VercelServiceClient {
 
   listActive(): Promise<VercelDeploymentView[]> {
     return this.call("GET", "/deployments?state=active");
-  }
-
-  private async call<T>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
-    const config = this.loadConfig();
-    if (!config.token) {
-      throw new HttpError(
-        "INTERNAL_SERVICE_TOKEN is not set in backend/.env, so the Vercel integration cannot be reached.",
-        503,
-        SERVICE_UNAVAILABLE,
-      );
-    }
-
-    let response: Response;
-    try {
-      response = await fetch(`${config.baseUrl}${path}`, {
-        method,
-        headers: {
-          "x-internal-token": config.token,
-          ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(this.timeoutMs),
-        cache: "no-store",
-      });
-    } catch (error) {
-      const reason = (error as Error).name === "TimeoutError" ? "timed out" : "connection refused";
-      throw serviceUnavailable(reason);
-    }
-
-    const text = await response.text();
-    let parsed: unknown;
-    try {
-      parsed = text ? JSON.parse(text) : undefined;
-    } catch {
-      parsed = undefined;
-    }
-
-    if (!response.ok) {
-      const error = parsed as { error?: string; message?: string } | undefined;
-      if (response.status === 401) {
-        throw new HttpError(
-          "The Vercel integration rejected this backend's INTERNAL_SERVICE_TOKEN; it must be the same in both .env files.",
-          503,
-          SERVICE_UNAVAILABLE,
-        );
-      }
-      throw new HttpError(
-        error?.message ?? `The Vercel integration answered HTTP ${response.status}.`,
-        response.status >= 500 ? 502 : response.status,
-        error?.error ?? "vercel_error",
-      );
-    }
-    return parsed as T;
   }
 }
