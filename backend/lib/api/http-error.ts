@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { GithubError } from "@/lib/github/github-app.service";
+import { Prisma } from "@prisma/client";
 
 /**
  * A domain error carrying the status the API should answer with.
@@ -34,6 +35,9 @@ export const conflict = (message: string) => new HttpError(message, 409, "confli
  * frontend, which is exactly the contract HttpError has.
  */
 export function toErrorResponse(error: unknown): NextResponse {
+  if (error instanceof Prisma.PrismaClientKnownRequestError && ["P2002", "P2003", "P2025"].includes(error.code)) {
+    return NextResponse.json({ error: "conflict", message: "This resource changed or is linked to an existing deployment. Refresh and try again." }, { status: 409 });
+  }
   if (error instanceof HttpError) {
     return NextResponse.json(
       { error: error.code, message: error.message },

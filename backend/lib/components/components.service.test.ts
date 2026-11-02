@@ -17,7 +17,7 @@ const component = {
 const prisma = {
   project: { findUnique: vi.fn() },
   component,
-  $transaction: vi.fn((fn: (tx: unknown) => unknown) => fn({ component })),
+  $transaction: vi.fn((fn: (tx: unknown) => unknown) => fn({ component, $executeRaw: vi.fn(), renderDeployment: { count: vi.fn().mockResolvedValue(0) }, renderConfig: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn().mockResolvedValue(null) } })),
 };
 const analysis = { getLatest: vi.fn(), analyze: vi.fn() };
 const events = { projectChanged: vi.fn() };

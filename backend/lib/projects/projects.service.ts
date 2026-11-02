@@ -189,6 +189,9 @@ export class ProjectsService {
    */
   async remove(userId: string, id: string): Promise<{ deleted: true; id: string }> {
     const project = await this.getOrThrow(userId, id);
+    if (await this.prisma.renderConfig.count({ where: { component: { projectId: id } } })) {
+      throw conflict("This project has Render configurations. Keep it to retain deployment history; manage hosted resources in the Render dashboard.");
+    }
 
     // Stop the container first. If the row went first and this then failed, the
     // container would be orphaned AND still holding the host port, with nothing

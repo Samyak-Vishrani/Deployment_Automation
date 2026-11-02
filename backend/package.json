@@ -15,7 +15,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "prisma db seed",
     "prisma:validate": "prisma validate",
-    "test:e2e": "node test/e2e-push.js"
+    "test:e2e": "node test/e2e-push.js",
+    "test:render-db": "node test/render-db.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
