@@ -46,7 +46,7 @@ describe("runPreflight", () => {
     expect(byId(result, "root-dir:c2")?.status).toBe("pass");
     expect(byId(result, "credential:vercel")).toMatchObject({
       status: "pending",
-      message: "Connect Vercel in Settings (available in Phase 6).",
+      message: "Vercel deployment is not available yet.",
     });
     expect(result.ok).toBe(false);
   });

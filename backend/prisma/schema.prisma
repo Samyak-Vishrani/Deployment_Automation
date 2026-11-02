@@ -64,6 +64,7 @@ model User {
 
   githubConnections GitHubConnection[]
   projects          Project[]
+  renderConnection  RenderConnection?
 
   @@index([email])
 }
@@ -278,9 +279,63 @@ model Component {
   updatedAt           DateTime        @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  renderConfig RenderConfig?
 
   @@unique([projectId, kind, rootDir])
   @@index([projectId])
+}
+
+model RenderConnection {
+  userId String @id
+  tokenEnc String @db.Text
+  ownerId String
+  ownerName String
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model RenderConfig {
+  componentId String @id
+  ownerId String
+  serviceName String @unique
+  runtime String @default("node")
+  region String @default("singapore")
+  plan String @default("free")
+  healthCheckPath String @default("")
+  envEnc String @db.Text
+  serviceId String? @unique
+  url String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  component Component @relation(fields: [componentId], references: [id], onDelete: Restrict)
+  deployments RenderDeployment[]
+}
+
+model RenderDeployment {
+  id String @id @default(cuid())
+  componentId String
+  requestKey String @unique
+  status String @default("submitting")
+  phase String @default("configure")
+  deployId String? @unique
+  error String? @db.Text
+  logs String @default("") @db.Text
+  logWarning String? @db.Text
+  secretSnapshotEnc String @db.Text
+  analysis Json?
+  analysisError String?
+  analysisStartedAt DateTime?
+  syncAfter DateTime @default(now())
+  createdAt DateTime @default(now())
+  finishedAt DateTime?
+  config RenderConfig @relation(fields: [componentId], references: [componentId], onDelete: Restrict)
+  @@index([componentId, createdAt(sort: Desc)])
+}
+
+model RenderRateLimit {
+  key String @id
+  window DateTime
+  count Int @default(1)
 }
 
 model Deployment {

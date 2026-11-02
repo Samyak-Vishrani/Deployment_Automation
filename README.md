@@ -19,6 +19,12 @@ Docker daemon             build + run each project's container on 127.0.0.1:5000
 
 GitHub delivers pushes to a single App-level webhook at `POST /api/webhooks/github`.
 
+Backend components can also deploy to Render from **Deploy → project → Deploy backend**.
+The integration connects a user's Render workspace, stores secrets encrypted, creates/reuses a
+web service, tracks deployment status and logs, and analyzes failed deployments with the existing
+Groq agent. See [Render setup and testing](RENDER_TESTING.md) for migrations, configuration,
+smoke tests, and production requirements.
+
 ## Backend layout
 
 ```text

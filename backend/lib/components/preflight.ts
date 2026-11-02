@@ -187,7 +187,7 @@ async function credentialCheck(
   return {
     ...base,
     status: "pending",
-    message: `Connect ${label} in Settings (available in Phase 6).`,
+    message: provider === "render" ? "Connect Render in the project's Deploy backend panel." : `${label} deployment is not available yet.`,
   };
 }
 

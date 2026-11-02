@@ -15,6 +15,8 @@ import type { ParsedRepo } from "@/lib/github/repo-url";
 import { assertValidUpdate, type ComponentInput, type UpdateComponentInput } from "./component-input";
 import { runPreflight, type PreflightDeps, type PreflightResult } from "./preflight";
 import { PROVIDER_FOR_KIND } from "./provider-rules";
+import { lockUser } from "@/lib/render/lock";
+import { ACTIVE } from "@/lib/render/client";
 
 /**
  * A component the analysis suggests, before the user has confirmed it.
@@ -91,6 +93,14 @@ export class ComponentsService {
     await this.getOrThrow(userId, projectId);
 
     const saved = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, userId);
+      if (await tx.renderDeployment.count({ where: { status: { in: ACTIVE }, config: { component: { projectId } } } })) {
+        throw conflict("Wait for the active Render deployment to finish before changing components.");
+      }
+      const protectedConfigs = await tx.renderConfig.findMany({ where: { component: { projectId } }, include: { component: true } });
+      if (protectedConfigs.some(config => !inputs.some(input => keyOf(input) === keyOf(config.component)))) {
+        throw conflict("A component with Render settings cannot be removed or moved to another folder. Its deployment history must remain linked.");
+      }
       const existing = new Map(
         (await tx.component.findMany({ where: { projectId } })).map((c) => [keyOf(c), c]),
       );
@@ -140,7 +150,12 @@ export class ComponentsService {
     assertValidUpdate(component.kind, { ...component, ...dto });
 
     try {
-      const updated = await this.prisma.component.update({ where: { id: component.id }, data: dto });
+      const updated = await this.prisma.$transaction(async tx => {
+        await lockUser(tx, userId);
+        if (await tx.renderDeployment.count({ where: { componentId, status: { in: ACTIVE } } })) throw conflict("Wait for the active Render deployment to finish before editing this component.");
+        if (dto.rootDir && dto.rootDir !== component.rootDir && await tx.renderConfig.findUnique({ where: { componentId } })) throw conflict("The folder of a Render-configured component cannot be changed.");
+        return tx.component.update({ where: { id: component.id }, data: dto });
+      });
       this.events.projectChanged(projectId, "updated");
       return updated;
     } catch (error) {
@@ -157,14 +172,18 @@ export class ComponentsService {
     componentId: string,
   ): Promise<{ deleted: true; id: string }> {
     const component = await this.getComponentOrThrow(userId, projectId, componentId);
-    await this.prisma.component.delete({ where: { id: component.id } });
+    await this.prisma.$transaction(async tx => {
+      await lockUser(tx, userId);
+      if (await tx.renderConfig.findUnique({ where: { componentId } })) throw conflict("This component has Render settings and deployment history. It cannot be deleted here.");
+      await tx.component.delete({ where: { id: component.id } });
+    });
     this.events.projectChanged(projectId, "updated");
     return { deleted: true, id: component.id };
   }
 
-  async preflight(userId: string, projectId: string): Promise<PreflightResult> {
+  async preflight(userId: string, projectId: string, componentId?: string, providerEnvKeys?: string[]): Promise<PreflightResult> {
     const project = await this.getOrThrow(userId, projectId);
-    const components = await this.prisma.component.findMany({ where: { projectId }, orderBy: ORDER });
+    const components = await this.prisma.component.findMany({ where: { projectId, ...(componentId ? { id: componentId } : {}) }, orderBy: ORDER });
 
     const envVars = (project.envVars ?? {}) as Record<string, unknown>;
     const filledEnvKeys = Object.entries(envVars)
@@ -192,7 +211,7 @@ export class ComponentsService {
       hasCredential: this.hasCredential,
     };
 
-    return runPreflight({ userId, filledEnvKeys }, components, deps);
+    return runPreflight({ userId, filledEnvKeys: providerEnvKeys ?? filledEnvKeys }, components, deps);
   }
 
   // ------------------------------------------------------------- internals --

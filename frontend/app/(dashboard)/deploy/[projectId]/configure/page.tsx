@@ -135,7 +135,6 @@ export default function ConfigureComponentsPage() {
   const [checking, setChecking] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
 
   const runPreflight = useCallback(async () => {
     setChecking(true);
@@ -233,7 +232,6 @@ export default function ConfigureComponentsPage() {
 
     setSaving(true);
     setError("");
-    setNotice("");
     try {
       const saved = await saveComponents(projectId, drafts.map(toFields));
       setDrafts(saved.map(toDraft));
@@ -273,8 +271,6 @@ export default function ConfigureComponentsPage() {
     );
   }
 
-  const canDeploy = Boolean(preflight?.ok) && !dirty;
-
   return (
     <>
       <Link href={`/deploy/${projectId}`} className="back-link">
@@ -283,7 +279,7 @@ export default function ConfigureComponentsPage() {
       <PageHeader
         eyebrow="Deployment configuration"
         title="Configure components"
-        description={`Confirm where each part of ${project.repoFullName ?? project.name} deploys. Frontends go to Vercel, backends to Render, the database to Neon.`}
+        description={`Confirm the components in ${project.repoFullName ?? project.name}. Backend deployment on Render is available now; other providers are planned.`}
         actions={
           <>
             <button
@@ -294,21 +290,9 @@ export default function ConfigureComponentsPage() {
             >
               <Icon name="refresh" size={14} /> {proposing ? "Analysing…" : "Reload from analysis"}
             </button>
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={!canDeploy}
-              title={
-                canDeploy
-                  ? "Provider deploys arrive in Phase 6"
-                  : dirty
-                    ? "Save first, then pre-flight runs"
-                    : "Every pre-flight check has to pass. Provider deploys arrive in Phase 6."
-              }
-              onClick={() => setNotice("Provider deploys arrive in Phase 6.")}
-            >
-              <Icon name="rocket" size={15} /> Deploy
-            </button>
+            {!dirty && <Link className="button button-primary" href={`/deploy/${projectId}#render-deployment`}>
+              <Icon name="rocket" size={15} /> Deploy backend on Render
+            </Link>}
           </>
         }
       />
@@ -317,12 +301,6 @@ export default function ConfigureComponentsPage() {
         <div className="form-error" style={{ marginBottom: 14 }}>
           <Icon name="x" size={14} />
           <span>{error}</span>
-        </div>
-      ) : null}
-      {notice ? (
-        <div className="callout" style={{ marginBottom: 14 }}>
-          <Icon name="sparkles" size={15} />
-          <span>{notice}</span>
         </div>
       ) : null}
       {proposal ? (
