@@ -36,6 +36,18 @@ export type DeployProject = {
 export type DeployRun = {
   id: string;
   projectId: string;
+  /** The component this deployed; null for the project-wide local Docker builds. */
+  componentId: string | null;
+  provider: ProviderId;
+  /** The provider's own progress, finer than `status` (Vercel: building, live...). */
+  providerStatus: ProviderStatus | null;
+  providerDeploymentId: string | null;
+  /** "git": the provider read the repo itself. "upload": we sent the files. */
+  sourceMode: "git" | "upload" | null;
+  /** This deployment's own URL on the provider. */
+  url: string | null;
+  /** The provider's dashboard page for this deployment. */
+  inspectorUrl: string | null;
   status: DeploymentStatus;
   trigger: DeploymentTrigger;
   branch: string;
@@ -214,8 +226,31 @@ export type PreflightCheck = {
 };
 
 export type PreflightResult = {
+  /** Every check passed: the whole project can deploy. */
   ok: boolean;
   checks: PreflightCheck[];
+  /** Per component id: its own checks pass and its provider can deploy it now. */
+  deployable: Record<string, boolean>;
+};
+
+/** A provider deployment's progress, the same words for every provider. */
+export type ProviderStatus = "queued" | "deploying" | "building" | "live" | "failed" | "cancelled";
+
+export type CredentialState = "connected" | "invalid" | "missing" | "unavailable";
+
+/** The user's account with a provider. Never includes the token. */
+export type ProviderCredential = {
+  provider: ProviderId;
+  state: CredentialState;
+  accountName?: string | null;
+  teamId?: string | null;
+  teamSlug?: string | null;
+  teams?: Array<{ id: string; slug: string; name: string }>;
+  /** A Vercel project already exists in the current team, so the team is fixed. */
+  scopeLocked?: boolean;
+  lastValidatedAt?: string | null;
+  /** Why the state is "unavailable". */
+  message?: string;
 };
 
 /** The MVP rule, mirrored from the backend: one provider per kind. */
@@ -234,6 +269,9 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
 
 export const isFinished = (status: DeploymentStatus) =>
   status === "success" || status === "failed" || status === "cancelled";
+
+/** Providers that can deploy today; the others are configurable but arrive in later phases. */
+export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "local_docker"]);
 
 /** Maps a build status onto the tones StatusPill already knows. */
 export function pillStatus(status: DeploymentStatus) {

@@ -32,3 +32,17 @@ export const PROVIDER_IDS: readonly ProviderId[] = ["vercel", "render", "neon", 
 export function isAllowedProvider(kind: ComponentKind, provider: ProviderId): boolean {
   return PROVIDER_FOR_KIND[kind] === provider;
 }
+
+/**
+ * Providers that can deploy today. Render and Neon are configurable but wait
+ * for Phases 7 and 8; pre-flight reports them as pending.
+ */
+export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "local_docker"]);
+
+/** The PLAN.md phase that brings each provider, for "arrives in Phase N" messages. */
+export const PROVIDER_PHASE: Record<ProviderId, number> = {
+  vercel: 6,
+  render: 7,
+  neon: 8,
+  local_docker: 3,
+};

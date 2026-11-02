@@ -10,6 +10,8 @@ export default defineConfig([
     "node_modules/**",
     "coverage/**",
     "data/**",
+    // A separate service with its own toolchain.
+    "vercel_integration/**",
     "next-env.d.ts",
   ]),
   {

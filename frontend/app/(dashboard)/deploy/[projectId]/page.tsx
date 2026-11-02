@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
 import {
   deleteDeployProject,
+  deployComponent,
   deployProject,
   getDeployProject,
   listComponents,
@@ -16,15 +17,25 @@ import {
   rollbackProject,
 } from "@/lib/deploy/client";
 import {
+  CAN_DEPLOY,
   duration,
   pillStatus,
   PROVIDER_LABEL,
+  type ComponentStatus,
   type DeployComponent,
   type DeployProject,
   type DeployRun,
 } from "@/lib/deploy/types";
 import { useAppEvents } from "@/lib/deploy/useAppEvents";
 import { relativeTime } from "@/lib/format";
+
+const COMPONENT_PILL: Record<ComponentStatus, "pending" | "configured" | "deploying" | "live" | "failed"> = {
+  draft: "pending",
+  configured: "configured",
+  deploying: "deploying",
+  live: "live",
+  failed: "failed",
+};
 
 export default function DeployProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -68,6 +79,17 @@ export default function DeployProjectPage() {
     }
   }
 
+  async function onDeployComponent(component: DeployComponent) {
+    setBusy(true);
+    try {
+      const run = await deployComponent(projectId, component.id);
+      router.push(`/deploy/builds/${run.id}`);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+
   async function onRollback() {
     if (!window.confirm(`Roll back to ${project?.previousImageTag}?`)) return;
     setBusy(true);
@@ -95,6 +117,10 @@ export default function DeployProjectPage() {
       setBusy(false);
     }
   }
+
+  const componentNames = new Map(components.map((c) => [c.id, c.name]));
+  // Components a provider is serving, frontends first: what "Open site" links to.
+  const liveSites = components.filter((c) => c.url && c.provider !== "local_docker" && c.kind !== "database");
 
   if (error && !project) {
     return (
@@ -136,12 +162,26 @@ export default function DeployProjectPage() {
             <button className="button button-primary" type="button" onClick={() => void onDeploy()} disabled={busy}>
               <Icon name="rocket" size={15} /> Deploy now
             </button>
-            {project.hostPort ? (
+            {liveSites.map((component) => (
+              <a
+                key={component.id}
+                className="button button-secondary"
+                href={component.url!}
+                target="_blank"
+                rel="noreferrer"
+                title={`${component.name} on ${PROVIDER_LABEL[component.provider]}`}
+              >
+                Open {liveSites.length > 1 ? component.name : "site"} <Icon name="external" size={13} />
+              </a>
+            ))}
+            {/* The local Docker container, only once one has actually been deployed. */}
+            {project.hostPort && project.currentImageTag ? (
               <a
                 className="button button-secondary"
                 href={`http://localhost:${project.hostPort}`}
                 target="_blank"
                 rel="noreferrer"
+                title="The local Docker container"
               >
                 Open :{project.hostPort} <Icon name="external" size={13} />
               </a>
@@ -295,6 +335,8 @@ export default function DeployProjectPage() {
                 <th>Folder</th>
                 <th>Provider</th>
                 <th>Status</th>
+                <th>Site</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -309,7 +351,33 @@ export default function DeployProjectPage() {
                   </td>
                   <td>{PROVIDER_LABEL[component.provider]}</td>
                   <td>
-                    <span className="meta-chip">{component.status}</span>
+                    <StatusPill status={COMPONENT_PILL[component.status]} />
+                  </td>
+                  <td>
+                    {component.url ? (
+                      <a className="text-link" href={component.url} target="_blank" rel="noreferrer">
+                        {component.url.replace(/^https?:\/\//, "")} <Icon name="external" size={11} />
+                      </a>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td>
+                    {CAN_DEPLOY.has(component.provider) && component.provider !== "local_docker" ? (
+                      <button
+                        className="button button-secondary"
+                        type="button"
+                        onClick={() => void onDeployComponent(component)}
+                        disabled={busy || component.status === "deploying" || component.status === "draft"}
+                        title={component.status === "draft" ? "Save it on the Configure screen first" : undefined}
+                      >
+                        <Icon name="rocket" size={13} /> {component.url ? "Redeploy" : "Deploy"}
+                      </button>
+                    ) : (
+                      <span className="tiny-label">
+                        {component.provider === "render" ? "Phase 7" : component.provider === "neon" ? "Phase 8" : ""}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -336,6 +404,7 @@ export default function DeployProjectPage() {
             <thead>
               <tr>
                 <th>Status</th>
+                <th>Component</th>
                 <th>Trigger</th>
                 <th>Commit</th>
                 <th>When</th>
@@ -349,6 +418,11 @@ export default function DeployProjectPage() {
                     <Link href={`/deploy/builds/${run.id}`}>
                       <StatusPill status={pillStatus(run.status)} />
                     </Link>
+                  </td>
+                  <td>
+                    {run.componentId
+                      ? `${componentNames.get(run.componentId) ?? "component"} · ${PROVIDER_LABEL[run.provider]}`
+                      : "Docker (whole project)"}
                   </td>
                   <td>{run.trigger}</td>
                   <td>

@@ -7,7 +7,7 @@
  */
 
 import type { ComponentKind, ProviderId } from "@prisma/client";
-import { PROVIDER_LABEL } from "./provider-rules";
+import { CAN_DEPLOY, PROVIDER_LABEL, PROVIDER_PHASE } from "./provider-rules";
 
 export type CheckStatus = "pass" | "fail" | "pending";
 
@@ -19,9 +19,21 @@ export type PreflightCheck = {
 };
 
 export type PreflightResult = {
+  /** Every check passed: the whole project can be deployed (Phase 8's "Deploy all"). */
   ok: boolean;
   checks: PreflightCheck[];
+  /**
+   * Per component id: its own checks and its provider's account check pass, and
+   * its provider can already deploy. Drives the per-component Deploy buttons.
+   */
+  deployable: Record<string, boolean>;
 };
+
+/**
+ * A provider account's state. "unavailable" means the integration service that
+ * holds the account could not be asked.
+ */
+export type CredentialState = "connected" | "invalid" | "missing" | "unavailable";
 
 export type PreflightComponent = {
   id: string;
@@ -43,7 +55,7 @@ export type PreflightDeps = {
   /** The repository tree at the commit being checked. */
   listTree(): Promise<{ entries: RepoTreeEntry[]; truncated: boolean }>;
   readFile(path: string): Promise<string>;
-  hasCredential(userId: string, provider: ProviderId): Promise<boolean>;
+  credentialState(userId: string, provider: ProviderId): Promise<CredentialState>;
 };
 
 /**
@@ -60,6 +72,7 @@ export async function runPreflight(
   if (components.length === 0) {
     return {
       ok: false,
+      deployable: {},
       checks: [
         {
           id: "components",
@@ -102,7 +115,19 @@ export async function runPreflight(
     checks.push(await credentialCheck(project.userId, provider, deps));
   }
 
-  return { ok: checks.every((check) => check.status === "pass"), checks };
+  const credentialPasses = new Set(
+    checks.filter((c) => c.id.startsWith("credential:") && c.status === "pass").map((c) => c.id.slice("credential:".length)),
+  );
+  const deployable: Record<string, boolean> = {};
+  for (const component of components) {
+    deployable[component.id] =
+      component.kind !== "database" &&
+      CAN_DEPLOY.has(component.provider) &&
+      credentialPasses.has(component.provider) &&
+      checks.filter((c) => c.componentId === component.id).every((c) => c.status === "pass");
+  }
+
+  return { ok: checks.every((check) => check.status === "pass"), checks, deployable };
 }
 
 function rootDirCheck(
@@ -181,14 +206,28 @@ async function credentialCheck(
   if (provider === "local_docker") {
     return { ...base, status: "pass", message: `${label} needs no account.` };
   }
-  if (await deps.hasCredential(userId, provider)) {
-    return { ...base, status: "pass", message: `${label} account connected.` };
+  if (!CAN_DEPLOY.has(provider)) {
+    return {
+      ...base,
+      status: "pending",
+      message: `Deploying to ${label} arrives in Phase ${PROVIDER_PHASE[provider]}.`,
+    };
   }
-  return {
-    ...base,
-    status: "pending",
-    message: `Connect ${label} in Settings (available in Phase 6).`,
-  };
+
+  switch (await deps.credentialState(userId, provider)) {
+    case "connected":
+      return { ...base, status: "pass", message: `${label} account connected.` };
+    case "invalid":
+      return { ...base, status: "fail", message: `${label} rejected the saved token. Reconnect ${label} in Settings.` };
+    case "unavailable":
+      return {
+        ...base,
+        status: "fail",
+        message: `The ${label} integration service is not running, so the ${label} account could not be checked.`,
+      };
+    default:
+      return { ...base, status: "fail", message: `Connect ${label} in Settings to deploy there.` };
+  }
 }
 
 /** Variable names declared in a .env.example: `KEY=...` or `export KEY=...`, comments skipped. */

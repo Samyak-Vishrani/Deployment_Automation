@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
 import {
+  deployComponent,
   getComponentProposal,
   getDeployProject,
   getPreflight,
@@ -14,6 +15,7 @@ import {
   saveComponents,
 } from "@/lib/deploy/client";
 import {
+  CAN_DEPLOY,
   PROVIDER_FOR_KIND,
   PROVIDER_LABEL,
   type ComponentFields,
@@ -125,6 +127,8 @@ const emptyDraft = (kind: ComponentKind | null): Draft => ({
  */
 export default function ConfigureComponentsPage() {
   const { projectId } = useParams<{ projectId: string }>();
+  const router = useRouter();
+  const [deploying, setDeploying] = useState<string | null>(null);
   const [project, setProject] = useState<DeployProject | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [proposal, setProposal] = useState<ComponentProposal | null>(null);
@@ -273,7 +277,25 @@ export default function ConfigureComponentsPage() {
     );
   }
 
-  const canDeploy = Boolean(preflight?.ok) && !dirty;
+  // Saved components whose own checks and provider account pass. With Render
+  // and Neon still to come, that is the Vercel frontends.
+  const deployableIds = dirty || !preflight ? [] : drafts.map((d) => d.key).filter((key) => preflight.deployable?.[key]);
+  const canDeploy = deployableIds.length > 0 && !deploying;
+  const vercelCheck = preflight?.checks.find((check) => check.id === "credential:vercel");
+  const needsVercel = vercelCheck && vercelCheck.status !== "pass";
+
+  async function deploy(ids: string[]) {
+    if (ids.length === 0) return;
+    setDeploying(ids.length === 1 ? ids[0] : "all");
+    setError("");
+    try {
+      const runs = await Promise.all(ids.map((id) => deployComponent(projectId, id)));
+      router.push(runs.length === 1 ? `/deploy/builds/${runs[0].id}` : `/deploy/${projectId}`);
+    } catch (e) {
+      setError((e as Error).message);
+      setDeploying(null);
+    }
+  }
 
   return (
     <>
@@ -300,14 +322,14 @@ export default function ConfigureComponentsPage() {
               disabled={!canDeploy}
               title={
                 canDeploy
-                  ? "Provider deploys arrive in Phase 6"
+                  ? `Deploy ${deployableIds.length === 1 ? "the component" : `${deployableIds.length} components`} that passed pre-flight`
                   : dirty
                     ? "Save first, then pre-flight runs"
-                    : "Every pre-flight check has to pass. Provider deploys arrive in Phase 6."
+                    : "A component deploys once its checks and its provider account pass. Render and Neon arrive in Phases 7 and 8."
               }
-              onClick={() => setNotice("Provider deploys arrive in Phase 6.")}
+              onClick={() => void deploy(deployableIds)}
             >
-              <Icon name="rocket" size={15} /> Deploy
+              <Icon name="rocket" size={15} /> {deploying ? "Deploying…" : "Deploy"}
             </button>
           </>
         }
@@ -317,6 +339,17 @@ export default function ConfigureComponentsPage() {
         <div className="form-error" style={{ marginBottom: 14 }}>
           <Icon name="x" size={14} />
           <span>{error}</span>
+        </div>
+      ) : null}
+      {needsVercel && !dirty ? (
+        <div className="callout" style={{ marginBottom: 14 }}>
+          <Icon name="link" size={15} />
+          <span>
+            {vercelCheck.message}{" "}
+            <Link className="text-link" href="/settings">
+              Open Settings
+            </Link>
+          </span>
         </div>
       ) : null}
       {notice ? (
@@ -355,6 +388,9 @@ export default function ConfigureComponentsPage() {
               draft={draft}
               onChange={(patch) => edit(draft.key, patch)}
               onRemove={() => removeDraft(draft.key)}
+              deployable={!dirty && Boolean(preflight?.deployable?.[draft.key])}
+              deploying={deploying === draft.key || deploying === "all"}
+              onDeploy={() => void deploy([draft.key])}
             />
           ))}
         </div>
@@ -388,7 +424,7 @@ export default function ConfigureComponentsPage() {
       <div className="section-heading">
         <div>
           <h2>Pre-flight</h2>
-          <p>Every check has to pass before the Deploy button unlocks.</p>
+          <p>A component can deploy once its own checks and its provider&apos;s account check pass.</p>
         </div>
         <button
           className="button button-secondary"
@@ -426,10 +462,16 @@ function ComponentCard({
   draft,
   onChange,
   onRemove,
+  deployable,
+  deploying,
+  onDeploy,
 }: {
   draft: Draft;
   onChange: (patch: Partial<Draft>) => void;
   onRemove: () => void;
+  deployable: boolean;
+  deploying: boolean;
+  onDeploy: () => void;
 }) {
   const isDatabase = draft.kind === "database";
   const provider = draft.kind ? PROVIDER_FOR_KIND[draft.kind] : null;
@@ -450,9 +492,22 @@ function ComponentCard({
             </p>
           </div>
         </div>
-        <button className="button button-danger" type="button" onClick={onRemove} aria-label={`Remove ${draft.name}`}>
-          <Icon name="x" size={14} /> Remove
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {provider && CAN_DEPLOY.has(provider) && provider !== "local_docker" ? (
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={onDeploy}
+              disabled={!deployable || deploying}
+              title={deployable ? `Deploy ${draft.name} to ${PROVIDER_LABEL[provider]}` : "Save, then pass pre-flight"}
+            >
+              <Icon name="rocket" size={14} /> {deploying ? "Deploying…" : `Deploy to ${PROVIDER_LABEL[provider]}`}
+            </button>
+          ) : null}
+          <button className="button button-danger" type="button" onClick={onRemove} aria-label={`Remove ${draft.name}`}>
+            <Icon name="x" size={14} /> Remove
+          </button>
+        </div>
       </div>
 
       <div className="form-grid">

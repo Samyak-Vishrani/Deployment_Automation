@@ -126,5 +126,14 @@ export async function POST(request: Request): Promise<NextResponse> {
       console.error(`[webhook] Failed to handle delivery ${deliveryId}: ${error.message}`),
     );
 
+  // Provider components (Vercel) whose folder changed. Vercel's own
+  // deploy-on-push is switched off for projects we create, so this is the
+  // only thing that redeploys them on a push.
+  void rt.providerDeployments
+    .handlePush(payload, deliveryId)
+    .catch((error: Error) =>
+      console.error(`[webhook] Provider deploys for delivery ${deliveryId} failed: ${error.message}`),
+    );
+
   return NextResponse.json({ received: true, status: "accepted" });
 }
