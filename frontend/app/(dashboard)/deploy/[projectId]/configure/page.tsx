@@ -139,6 +139,7 @@ export default function ConfigureComponentsPage() {
   const [checking, setChecking] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const runPreflight = useCallback(async () => {
     setChecking(true);
@@ -236,6 +237,7 @@ export default function ConfigureComponentsPage() {
 
     setSaving(true);
     setError("");
+    setNotice("");
     try {
       const saved = await saveComponents(projectId, drafts.map(toFields));
       setDrafts(saved.map(toDraft));
@@ -275,7 +277,25 @@ export default function ConfigureComponentsPage() {
     );
   }
 
-  const canDeploy = Boolean(preflight?.ok) && !dirty;
+  // Saved components whose own checks and provider account pass. With Render
+  // and Neon still to come, that is the Vercel frontends.
+  const deployableIds = dirty || !preflight ? [] : drafts.map((d) => d.key).filter((key) => preflight.deployable?.[key]);
+  const canDeploy = deployableIds.length > 0 && !deploying;
+  const vercelCheck = preflight?.checks.find((check) => check.id === "credential:vercel");
+  const needsVercel = vercelCheck && vercelCheck.status !== "pass";
+
+  async function deploy(ids: string[]) {
+    if (ids.length === 0) return;
+    setDeploying(ids.length === 1 ? ids[0] : "all");
+    setError("");
+    try {
+      const runs = await Promise.all(ids.map((id) => deployComponent(projectId, id)));
+      router.push(runs.length === 1 ? `/deploy/builds/${runs[0].id}` : `/deploy/${projectId}`);
+    } catch (e) {
+      setError((e as Error).message);
+      setDeploying(null);
+    }
+  }
 
   return (
     <>
@@ -285,7 +305,7 @@ export default function ConfigureComponentsPage() {
       <PageHeader
         eyebrow="Deployment configuration"
         title="Configure components"
-        description={`Confirm the components in ${project.repoFullName ?? project.name}. Backend deployment on Render is available now; other providers are planned.`}
+        description={`Confirm where each part of ${project.repoFullName ?? project.name} deploys. Frontends go to Vercel, backends to Render, the database to Neon.`}
         actions={
           <>
             <button
@@ -302,14 +322,14 @@ export default function ConfigureComponentsPage() {
               disabled={!canDeploy}
               title={
                 canDeploy
-                  ? "Provider deploys arrive in Phase 6"
+                  ? `Deploy ${deployableIds.length === 1 ? "the component" : `${deployableIds.length} components`} that passed pre-flight`
                   : dirty
                     ? "Save first, then pre-flight runs"
-                    : "Every pre-flight check has to pass. Provider deploys arrive in Phase 6."
+                    : "A component deploys once its checks and its provider account pass. Render and Neon arrive in Phases 7 and 8."
               }
-              onClick={() => setNotice("Provider deploys arrive in Phase 6.")}
+              onClick={() => void deploy(deployableIds)}
             >
-              <Icon name="rocket" size={15} /> Deploy
+              <Icon name="rocket" size={15} /> {deploying ? "Deploying…" : "Deploy"}
             </button>
           </>
         }
@@ -319,6 +339,17 @@ export default function ConfigureComponentsPage() {
         <div className="form-error" style={{ marginBottom: 14 }}>
           <Icon name="x" size={14} />
           <span>{error}</span>
+        </div>
+      ) : null}
+      {needsVercel && !dirty ? (
+        <div className="callout" style={{ marginBottom: 14 }}>
+          <Icon name="link" size={15} />
+          <span>
+            {vercelCheck.message}{" "}
+            <Link className="text-link" href="/settings">
+              Open Settings
+            </Link>
+          </span>
         </div>
       ) : null}
       {notice ? (

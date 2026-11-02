@@ -1,28 +1,115 @@
-import { stdin, stdout } from "node:process";
-import readline from "node:readline/promises";
 
-// The sample endpoint was replaced by authenticated, owned deployment analysis.
-// Run after signing in; supply the session cookie through an environment variable.
-const session = process.env.ORBITOPS_SESSION_COOKIE;
-if (!session) {
-  console.error("Use Analyze failure with AI in the deployment panel, or set ORBITOPS_SESSION_COOKIE for this CLI.");
-  process.exitCode = 1;
-} else {
-  const rl = readline.createInterface({ input: stdin, output: stdout });
+import readline from "node:readline/promises";
+import { stdin, stdout } from "node:process";
+
+const rl = readline.createInterface({
+  input: stdin,
+  output: stdout,
+});
+
+const API_URL = "http://localhost:3001/api/log-analysis/analyze";
+
+async function analyzeLog(sampleLogId) {
+  console.log("\nAnalyzing deployment logs...");
+  console.log("Please wait for the AI agent.\n");
+
   try {
-    const projectId = await rl.question("Project ID: ");
-    const deploymentId = await rl.question("Failed Render deployment ID: ");
-    const response = await fetch(`${process.env.ORBITOPS_API_URL ?? 'http://localhost:3001'}/api/log-analysis/analyze`, {
+    const response = await fetch(API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Origin: process.env.FRONTEND_URL ?? "http://localhost:3000", Cookie: `orbitops_session=${session}` },
-      body: JSON.stringify({ projectId: projectId.trim(), deploymentId: deploymentId.trim() }),
-      signal: AbortSignal.timeout(60_000),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ sampleLogId }),
     });
+
     const result = await response.json();
-    if (!response.ok) throw new Error(result.message ?? "Analysis failed.");
-    console.log(JSON.stringify(result.analysis, null, 2));
+
+    if (!response.ok) {
+      console.log("Analysis failed:");
+      console.log(result);
+      return;
+    }
+
+    console.log("==================================");
+    console.log("       ORBITOPS AI ANALYSIS");
+    console.log("==================================");
+
+    console.log("\nProject:", result.projectName);
+    console.log("Log Type:", result.logType);
+    console.log("Source:", result.source);
+
+    console.log("\n--- FAILURE CLASSIFICATION ---");
+    console.log(
+      "Failure Type:",
+      result.classification.failureType
+    );
+    console.log(
+      "Severity:",
+      result.classification.severity
+    );
+
+    console.log("\n--- AI ANALYSIS ---");
+    console.log(
+      "Summary:",
+      result.analysis.summary
+    );
+
+    console.log(
+      "\nRoot Cause:",
+      result.analysis.rootCause
+    );
+
+    console.log("\n--- RECOMMENDATIONS ---");
+
+    for (const recommendation of result.analysis.recommendations) {
+      console.log(`\n${recommendation.title}`);
+      console.log(recommendation.description);
+
+      if (recommendation.command) {
+        console.log("Command:", recommendation.command);
+      }
+
+      if (recommendation.file) {
+        console.log("File:", recommendation.file);
+      }
+    }
+
+    console.log(
+      "\nConfidence:",
+      `${Math.round(result.analysis.confidence * 100)}%`
+    );
+
+    console.log("\n==================================");
   } catch (error) {
-    console.error(error instanceof Error ? error.message : "Analysis failed.");
-    process.exitCode = 1;
-  } finally { rl.close(); }
+    console.error("Could not connect to OrbitOps backend.");
+    console.error(error.message);
+  }
 }
+
+async function main() {
+  console.log("\n==================================");
+  console.log("     ORBITOPS AI LOG ANALYZER");
+  console.log("==================================");
+
+  while (true) {
+    const sampleLogId = await rl.question(
+      "\nEnter Sample Log ID (LOG-001 to LOG-012) or 'exit': "
+    );
+
+    if (sampleLogId.toLowerCase() === "exit") {
+      console.log("\nExiting OrbitOps CLI...");
+      break;
+    }
+
+    if (!/^LOG-\d{3}$/.test(sampleLogId)) {
+      console.log("Invalid format. Example: LOG-001");
+      continue;
+    }
+
+    await analyzeLog(sampleLogId);
+  }
+
+  rl.close();
+}
+
+main();

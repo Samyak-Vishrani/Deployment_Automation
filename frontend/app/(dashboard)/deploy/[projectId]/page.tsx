@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { AnalysisPanel } from "@/components/AnalysisPanel";
-import { RenderDeploymentPanel } from "@/components/RenderDeploymentPanel";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
@@ -160,9 +159,8 @@ export default function DeployProjectPage() {
         description={`${project.repoFullName ?? "no repository"} · ${project.branch ?? "no branch"}`}
         actions={
           <>
-            <a className="button button-primary" href="#render-deployment">Deploy backend → Render</a>
-            <button className="button button-secondary" type="button" onClick={() => void onDeploy()} disabled={busy}>
-              <Icon name="rocket" size={15} /> Deploy locally
+            <button className="button button-primary" type="button" onClick={() => void onDeploy()} disabled={busy}>
+              <Icon name="rocket" size={15} /> Deploy now
             </button>
             {liveSites.map((component) => (
               <a
@@ -388,7 +386,6 @@ export default function DeployProjectPage() {
         )}
       </div>
 
-      <RenderDeploymentPanel projectId={projectId} />
       <AnalysisPanel projectId={projectId} />
 
       <div className="section-heading">

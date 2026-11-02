@@ -206,14 +206,28 @@ async function credentialCheck(
   if (provider === "local_docker") {
     return { ...base, status: "pass", message: `${label} needs no account.` };
   }
-  if (await deps.hasCredential(userId, provider)) {
-    return { ...base, status: "pass", message: `${label} account connected.` };
+  if (!CAN_DEPLOY.has(provider)) {
+    return {
+      ...base,
+      status: "pending",
+      message: `Deploying to ${label} arrives in Phase ${PROVIDER_PHASE[provider]}.`,
+    };
   }
-  return {
-    ...base,
-    status: "pending",
-    message: `Connect ${label} in Settings (available in Phase 6).`,
-  };
+
+  switch (await deps.credentialState(userId, provider)) {
+    case "connected":
+      return { ...base, status: "pass", message: `${label} account connected.` };
+    case "invalid":
+      return { ...base, status: "fail", message: `${label} rejected the saved token. Reconnect ${label} in Settings.` };
+    case "unavailable":
+      return {
+        ...base,
+        status: "fail",
+        message: `The ${label} integration service is not running, so the ${label} account could not be checked.`,
+      };
+    default:
+      return { ...base, status: "fail", message: `Connect ${label} in Settings to deploy there.` };
+  }
 }
 
 /** Variable names declared in a .env.example: `KEY=...` or `export KEY=...`, comments skipped. */

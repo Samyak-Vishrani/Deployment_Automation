@@ -24,6 +24,13 @@ Backend :3001  ⇄  Vercel integration :3002   backend/vercel_integration — it
 
 GitHub delivers pushes to a single App-level webhook at `POST /api/webhooks/github`.
 
+The Vercel integration is a separate process that only the backend talks to. The backend calls it
+with a shared `INTERNAL_SERVICE_TOKEN`; it posts deploy events back to
+`POST /api/internal/provider-events`, signed with `INTERNAL_CALLBACK_SECRET`. It stores Vercel
+tokens (encrypted), the Vercel project per component and its own deploy state in the `vercel`
+schema; the backend keeps the `Deployment` rows, the log files and the live `/events` feed. See
+`backend/vercel_integration/README.md`.
+
 ## Backend layout
 
 ```text

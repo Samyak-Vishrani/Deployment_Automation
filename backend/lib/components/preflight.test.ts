@@ -50,7 +50,7 @@ describe("runPreflight", () => {
     });
     expect(byId(result, "credential:render")).toMatchObject({
       status: "pending",
-      message: "Connect Vercel in Settings (available in Phase 6).",
+      message: "Deploying to Render arrives in Phase 7.",
     });
     expect(result.ok).toBe(false);
     expect(result.deployable).toEqual({ c1: false, c2: false });

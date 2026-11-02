@@ -60,7 +60,22 @@ function build(): Runtime {
   const deployments = new DeploymentsService(prisma, queue, events);
   const projects = new ProjectsService(prisma, github, githubUser, docker, events);
   const analysis = new AnalysisService(prisma, github);
-  const components = new ComponentsService(prisma, github, analysis, events);
+  const vercel = new VercelServiceClient();
+  const providerDeployments = new ProviderDeploymentsService(
+    prisma,
+    github,
+    events,
+    vercel,
+    new ProviderLogSink(logs),
+  );
+  const components = new ComponentsService(prisma, github, analysis, events, async (userId, provider) => {
+    if (provider !== "vercel") return "missing";
+    try {
+      return (await vercel.getCredential(userId)).state;
+    } catch {
+      return "unavailable";
+    }
+  });
   const executor = new DeployExecutor(prisma, github, docker, logs, events);
 
   // The queue is constructed before the executor exists, so the runner is

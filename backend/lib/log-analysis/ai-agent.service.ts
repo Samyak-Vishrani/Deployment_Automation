@@ -28,7 +28,7 @@ function getGroqClient(): Groq {
     throw new Error("GROQ_API_KEY is not configured.");
   }
 
-  return new Groq({ apiKey, timeout: 45_000, maxRetries: 0 });
+  return new Groq({ apiKey });
 }
 const MODEL =
   process.env.GROQ_MODEL || "openai/gpt-oss-120b";

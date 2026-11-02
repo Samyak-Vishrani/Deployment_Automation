@@ -1,17 +1,51 @@
+
 import { NextResponse } from "next/server";
-import { requireUser } from "@/lib/auth/current-user";
 import { toErrorResponse } from "@/lib/api/http-error";
-import { readBody, requireTrustedOrigin, rateLimit, textField } from "@/lib/render/security";
-import { analyze } from "@/lib/render/service";
+// import { requireUser } from "@/lib/auth/current-user";
+import { SAMPLE_LOGS } from "@/lib/log-analysis/sample-logs";
+import { analyzeDeploymentLogs } from "@/lib/log-analysis/log-analysis.service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export async function POST(request: Request) {
+
+export async function POST(request: Request): Promise<NextResponse> {
   try {
-    const user = await requireUser();
-    requireTrustedOrigin(request);
-    await rateLimit(user.id, "analysis", 5);
-    const body = await readBody(request);
-    return NextResponse.json(await analyze(user.id, textField(body, "projectId"), textField(body, "deploymentId")), { headers: { "Cache-Control": "no-store" } });
-  } catch (error) { return toErrorResponse(error); }
+    // Authenticate the user
+    // await requireUser();
+
+    // Read request body
+    const body = await request.json().catch(() => null);
+
+    if (!body || typeof body.sampleLogId !== "string") {
+      return NextResponse.json(
+        { error: "sampleLogId is required." },
+        { status: 400 }
+      );
+    }
+
+    // Find the requested sample log
+    const sample = SAMPLE_LOGS.find(
+      (log) => log.id === body.sampleLogId
+    );
+
+    if (!sample) {
+      return NextResponse.json(
+        { error: "Sample log not found." },
+        { status: 404 }
+      );
+    }
+
+    // Run the complete log-analysis pipeline
+    const result = await analyzeDeploymentLogs({
+      source: "sample",
+      logType: sample.logType,
+      projectName: sample.projectName,
+      logs: sample.logs,
+    });
+
+    // Return analysis result
+    return NextResponse.json(result);
+  } catch (error) {
+    return toErrorResponse(error);
+  }
 }
