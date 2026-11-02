@@ -20,6 +20,7 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "dockerode": "^4.0.4",
+    "groq-sdk": "^1.6.0",
     "micromatch": "^4.0.8",
     "next": "16.3.4",
     "prisma": "^5.22.0",
