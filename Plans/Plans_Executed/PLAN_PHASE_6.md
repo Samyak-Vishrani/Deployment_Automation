@@ -4,9 +4,38 @@
 > `Plans/Plans_Remaining/PLAN_PHASE_6.md` (companion to `PLAN_PHASE_5.md`), then work through the
 > steps below in order.
 
-> **Status: code implemented (2026-11-02), following the Addendum: all Vercel code is in
-> `backend/vercel_integration/`.** Not yet done: step 0 (the API spike, which needs a real Vercel
-> token: `npm run spike`), applying the two migrations, and the manual checks in Verification §4.
+> **Status: done and verified live (2026-11-02, re-checked 2026-11-03).** Built following the
+> Addendum: all Vercel code is in `backend/vercel_integration/`.
+>
+> | Item | State |
+> |---|---|
+> | Steps 1–12, Addendum A1–A8 | ✅ implemented (step 11, push-to-deploy, included) |
+> | Step 0, the API spike (`npm run spike`, needs a real Vercel token) | ⬜ not run; `src/vercel/__fixtures__/` is empty, so `isGitAccessError` is not yet tightened |
+> | Migrations: backend `202611030001_vercel_provider` and the service's `vercel` schema | ✅ applied |
+> | Verification §1, build hygiene | ✅ `vercel_integration` 96 tests, backend 301 tests, all passing (typecheck clean) |
+> | Verification §2, unit and contract tests | ✅ passing (stubbed `fetch`; no recorded fixtures yet) |
+> | Verification §3, live smoke test (`VERCEL_SMOKE_TOKEN`) | ⬜ not run |
+> | Verification §4 and A9, manual | 🟡 the core path passed; the edge cases are not run yet (list below) |
+>
+> Verification §4, checked live with `Robert-547/Vercel_Integration_test`:
+> - ✅ Settings: token connected (the deploys ran under it).
+> - ✅ Configure: Frontend → Vercel pre-flight passed; **Deploy** enabled.
+> - ✅ Deploy via the **upload fallback**:
+>   - Vercel's GitHub app is not installed on the repo, so the project was left unlinked;
+>   - the source was downloaded from GitHub, and only the files Vercel lacked were uploaded;
+>   - status queued → running → success;
+>   - live on `*.vercel.app`: 3 deploys on 2026-11-02 and 1 on 2026-11-03.
+> - ✅ Redeploy reuses the same Vercel project; only the changed file is uploaded.
+> - ⬜ Not checked yet:
+>   - a deploy **with Vercel's GitHub app installed** (git-source path, "Vercel · git");
+>   - a git push does not create a deploy on the Vercel dashboard;
+>   - a build-command change → PATCH;
+>   - a broken build → failed;
+>   - cancel mid-build;
+>   - restart of either service mid-build → resume (A9);
+>   - the service stopped → "not running";
+>   - a second user → 404;
+>   - `curl` without `x-internal-token` → 401 (covered by unit tests only).
 >
 > Where the code departs from the text below, and why:
 > - **No `DeploymentProvider` interface or `ProviderRegistry` in the main backend.** With the

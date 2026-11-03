@@ -10,7 +10,13 @@ Docker, …) through the same provider interface.
 
 Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not started
 
-**Status as of 2026-11-03:** Phases 3–6 done (Vercel deploys verified live on 2026-11-02). Phase 7 code is complete (`Plans/Plans_Remaining/PLAN_PHASE_7.md`): Render is a separate service in `backend/render_integration`. It needs its secrets, its migrations applied, Render connected to GitHub, the API spike and a live deploy check.
+**Status as of 2026-11-03:** Phases 3–7 done. All migrations are applied (backend, `vercel` and `render`
+schemas). Vercel deploys went live on 2026-11-02 and Render on 2026-11-03, both from the
+`Vercel_Integration_test` repo: the frontend at `*.vercel.app`, the backend at
+`https://vercel-integration-test-backend.onrender.com`, with the health check returning 200. A push
+redeployed only the backend. Tests pass: backend 301, `vercel_integration` 96, `render_integration` 113.
+Still open for 6 and 7: the API spikes (`npm run spike`, needs real tokens) and the remaining manual
+edge-case checks (cancel, restart-resume, broken build, second user, …). **Next: Phase 8 (Neon).**
 
 ---
 
@@ -22,14 +28,14 @@ Legend: ✅ done · 🟡 partial (code exists to reuse or adapt) · ⬜ not star
 | 2 | Authentication | 🟡 | — |
 | 3 | GitHub integration | ✅ | GitHub App JWT → installation token, repo metadata, branch check, webhook HMAC + dedupe |
 | 4 | Repository analysis | ✅ | Source fetch (tarball → extract); detection, build settings, DB hints and snapshots added on top |
-| 5 | Deployment configuration | 🟡 | Code complete; migration not applied and the manual checks not yet run |
-| 6 | Vercel integration | ✅ | Own service (`backend/vercel_integration`); a Next.js subfolder deployed live on `*.vercel.app` |
-| 7 | Render integration | 🟡 | Code complete as its own service (`backend/render_integration`); needs secrets, migrations, the API spike and a live check |
+| 5 | Deployment configuration | ✅ | Migration applied; the configure → pre-flight → Deploy flow drove the live Vercel and Render deploys |
+| 6 | Vercel integration | ✅ | Own service (`backend/vercel_integration`); a Next.js subfolder deployed live on `*.vercel.app` (upload fallback); spike pending |
+| 7 | Render integration | ✅ | Own service (`backend/render_integration`); an Express subfolder live on `*.onrender.com`, push-to-deploy verified; spike pending |
 | 8 | Neon integration | ⬜ | — |
-| 9 | Environment variables | 🟡 | `envVars` column, values never returned by the API, log redaction; encryption helper (`secret-box.ts`) exists but env vars are not encrypted yet |
+| 9 | Environment variables | 🟡 | `envVars` column, values never returned by the API, log redaction; project env vars are synced to Render before each deploy (Phase 7); not encrypted per component yet |
 | 10 | Dashboard | 🟡 | Project list, status badges, live `/events` SSE |
-| 11 | Deployment history | 🟡 | Per-project history and detail page; component and provider columns added in Phase 6 |
-| 12 | Logs | 🟡 | Local log file + SSE replay-then-tail; Vercel build logs relayed into it since Phase 6 |
+| 11 | Deployment history | 🟡 | Per-project history and detail page; component and provider columns (Phase 6); push-to-deploy for Vercel and Render components |
+| 12 | Logs | 🟡 | Local log file + SSE replay-then-tail; Vercel (Phase 6) and Render (Phase 7) build/app logs relayed into it |
 | 13 | AI assistant | ⬜ | — |
 
 ---
@@ -196,13 +202,13 @@ Overriding the result is delivered by Phase 5.
 
 ---
 
-## Phase 5 — Deployment Configuration 🟡
+## Phase 5 — Deployment Configuration ✅
 
 **Goal:** the user confirms where each component goes.
 
-Code complete (`Plans/Plans_Remaining/PLAN_PHASE_5.md`). Before this phase is ✅, the
-`202611020001_deployment_configuration` migration has to be applied and the manual checks in that
-plan run against a real repo.
+Done (`Plans/Plans_Executed/PLAN_PHASE_5.md`). The `202611020001_deployment_configuration`
+migration was applied on 2026-11-03, and the configure screen (cards, Save, pre-flight, Deploy)
+drove the live Vercel and Render deploys of `Vercel_Integration_test`.
 
 - ✅ Data model: a new `Component` model (`kind`, `name`, `rootDir`, `framework`, install/build/start
   commands, `outputDir`, `nodeVersion`, `provider`, `providerResourceId`, `url`, `status`), unique on
@@ -267,14 +273,21 @@ deploy events back to `/api/internal/provider-events`, HMAC-signed. Details:
   - the project page shows each component's live URL with Deploy/Redeploy;
   - the build page links to Vercel and the live site.
 - ✅ Push-to-deploy for Vercel components already deployed once (watch path = `rootDir/**`)
+- ✅ Migrations applied: backend `202611030001_vercel_provider` and the service's own (2026-11-03)
 - ⬜ API spike against a real Vercel account (`npm run spike`), then tighten `isGitAccessError` from the recorded fixtures
-- ✅ Live check: a Next.js subfolder goes live on `*.vercel.app` (2026-11-02)
+  (`src/vercel/__fixtures__/` is still empty)
+- ✅ Live check: a Next.js subfolder goes live on `*.vercel.app` (2026-11-02, again 2026-11-03).
+  The deploys used the **upload fallback**: Vercel's GitHub app is not installed on the test repo.
+  A redeploy reused the same Vercel project and uploaded only the changed file.
+- ⬜ Not yet checked live: the git-source path (Vercel's GitHub app installed), a broken build,
+  cancel mid-build, restart-resume of either service, a second user (Verification §4 and A9 in
+  `PLAN_PHASE_6.md`)
 
 **Done when:** clicking Deploy puts a Next.js subfolder live on a `*.vercel.app` URL, and it shows in our dashboard.
 
 ---
 
-## Phase 7 — Render Integration 🟡
+## Phase 7 — Render Integration ✅
 
 **Goal:** the backend component deploys to the user's Render account.
 
@@ -321,9 +334,21 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
   - Render card in Settings (API key, workspace, region, plan);
   - **Deploy to Render** and **Health check path** on the Backend card;
   - **Open api** on the project page.
+- ✅ Migrations applied: backend `202611030003_render_provider` and the service's
+  `202611030002_init` (2026-11-03)
 - ⬜ API spike against a real Render account (`npm run spike`); confirm the log labels and the
-  repo-access error text
-- ⬜ Live check: a NestJS/Express subfolder goes live on `*.onrender.com`
+  repo-access error text (`src/render/__fixtures__/` is still empty)
+- ✅ Live check (2026-11-03): the Express `backend/` of `Vercel_Integration_test` went live at
+  `https://vercel-integration-test-backend.onrender.com`:
+  - the service was created as node / oregon / free with the project's env vars and
+    `NODE_VERSION`;
+  - the deploy Render started on creation built our SHA, so it was adopted;
+  - status went queued → building → live, with Render's build and app logs streamed;
+  - the health probe returned HTTP 200.
+- ✅ Push-to-deploy: a push (`27e3424`) redeployed only the backend, reusing the same service, and
+  the frontend was not redeployed
+- ⬜ Not yet checked live: env var echo, a broken start command, cancel mid-build, restart-resume,
+  removed GitHub access, the service stopped, a second user (Verification §4 in `PLAN_PHASE_7.md`)
 
 **Done when:** a NestJS subfolder is live on `*.onrender.com`, and status moves through queued → building → live.
 
@@ -354,7 +379,7 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 - ⬜ `EnvVar` model per component: `key, valueEnc, isSecret, source (user|system), target (build|runtime|both)`
 - 🟡 AES-256-GCM encryption at rest (shared with GitHub and provider tokens)
 - ⬜ `GET/PUT /api/projects/:id/components/:cid/env` — values masked, write-only secrets
-- ⬜ Sync to the provider on save and before each deploy (`setEnv`)
+- 🟡 Sync to the provider on save and before each deploy (`setEnv`): ✅ Render syncs `Project.envVars` before each deploy (Phase 7); Vercel ⬜; sync on save ⬜
 - ⬜ Pre-fill keys from `.env.example` found during analysis
 - ⬜ UI: key/value editor per component, reveal-on-click only for non-secret values
 
@@ -382,8 +407,8 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 - ✅ Push-to-deploy pipeline: webhook → filters (branch, skip-ci, watch paths) → queue — `deployments/push-filter.ts`
 - 🟡 Add `componentId, provider, providerDeploymentId, url` (✅ Phase 6) and a per-project sequence number (`#12`)
 - ⬜ Group one "Deploy" click into a `Release` holding its component deployments
-- 🟡 Push-to-deploy now triggers provider deploys (per component, with watch paths = the component's `rootDir/**`): ✅ Vercel (Phase 6)
-- ⬜ Rollback = provider redeploy of the previous successful `providerDeploymentId` / commit
+- ✅ Push-to-deploy now triggers provider deploys (per component, with watch paths = the component's `rootDir/**`): ✅ Vercel (Phase 6), ✅ Render (Phase 7, verified live)
+- 🟡 Rollback = provider redeploy of the previous successful `providerDeploymentId` / commit (service hooks exist: Vercel `redeploy`, Render `rollback`; no route or UI yet)
 - ⬜ History table: `#, component, provider, status, commit, duration`
 
 ---
@@ -393,9 +418,10 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 - ✅ Log writer → file + in-process bus, with redaction — `deployments/deployment-logs.service.ts`
 - ✅ `GET /deployments/:id/logs` and SSE `/logs/stream`, replay then tail, 15 s heartbeat
 - ✅ Frontend log viewer that autoscrolls only when pinned to the bottom
-- 🟡 Pull provider logs (`getLogs`) during the poll loop into the same log writer (✅ Vercel, Phase 6), so the existing
-  SSE + viewer work unchanged
-- ⬜ Add our own orchestration lines (`==> Provisioning Neon`, `==> Deploying to Render`)
+- 🟡 Pull provider logs (`getLogs`) during the poll loop into the same log writer (✅ Vercel, Phase 6; ✅ Render, Phase 7;
+  Neon ⬜), so the existing SSE + viewer work unchanged
+- 🟡 Add our own orchestration lines: per-provider lines exist (`==> Preparing Render service`, `==> Deploying … to Render`,
+  `==> Live at …`); the cross-component ones (`==> Provisioning Neon`, deploy-all ordering) arrive with Phase 8
 - 🟡 Highlight error lines, and a "copy log" button
 
 ---
@@ -414,9 +440,10 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 ## Cross-cutting
 
 - ✅ `crypto/secret-box.ts` (AES-256-GCM, versioned key id) — used by GitHub tokens today; provider tokens and env vars next
-- ✅ Provider HTTP client: retries with backoff on 429/5xx, and error mapping to user-facing messages (`vercel_integration/src/http/`, Phase 6)
-- ✅ Idempotency: `ensureProject` looks up before it creates; provider resource ids are stored straight away (Phase 6)
-- ⬜ Contract tests per provider against recorded fixtures; one opt-in live smoke test per provider
+- ✅ Provider HTTP client: retries with backoff on 429/5xx, and error mapping to user-facing messages (`vercel_integration/src/http/`, Phase 6; copied into `render_integration`, which also honours `ratelimit-reset`, Phase 7)
+- ✅ Idempotency: `ensureProject` / `ensureService` look up before they create; provider resource ids are stored straight away (Phases 6–7)
+- 🟡 Contract tests per provider against recorded fixtures (stubbed-`fetch` unit tests exist; fixtures wait on the spikes); one opt-in live smoke test per provider ⬜
+- ⬜ Extract `integration_common` (internal auth, secret-box, outbox, provider-fetch, …) when Neon makes it three services
 - ✅ Security baseline carried over: no tokens in argv/logs, `shell: false`, strict input validation (`ValidationPipe` whitelist)
 
 ---
@@ -433,4 +460,4 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 ## Suggested build order
 
 1 → 2 → 3 → 4 → 5 → 6 (vertical slice: one Next.js repo live on Vercel) → 7 → 8 → 9 → 10/11/12 polish → 13.
-Ship a demo after 6, and after 8.
+Ship a demo after 6, and after 8. **Done through 7 (2026-11-03); Phase 8 (Neon) is next.**

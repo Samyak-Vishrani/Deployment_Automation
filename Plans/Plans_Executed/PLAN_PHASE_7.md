@@ -2,9 +2,40 @@
 
 > Companion to `PLAN_PHASE_6.md`.
 >
-> **Status: code implemented (2026-11-03), all of it in `backend/render_integration/` plus the
-> seam listed below.** Not yet done: step 0 (the API spike, which needs a real Render API key:
-> `npm run spike`), applying the two migrations, and the manual checks in Verification §4.
+> **Status: done and verified live (2026-11-03).** All Render code is in
+> `backend/render_integration/`, plus the seam listed below.
+>
+> | Item | State |
+> |---|---|
+> | Steps 1–9 (service, seam, frontend, docs) | ✅ implemented |
+> | Step 0, the API spike (`npm run spike`, needs a real Render API key) | ⬜ not run; `src/render/__fixtures__/` is empty |
+> | Migrations `202611030003_render_provider` (backend) and `202611030002_init` (`render` schema) | ✅ applied 2026-11-03 |
+> | Verification §1, build hygiene | ✅ `render_integration` 113 tests, backend 301 tests, `vercel_integration` 96 tests, all passing (typecheck clean) |
+> | Verification §2–3, unit and backend tests | ✅ passing |
+> | Verification §4, manual | 🟡 the core path passed; the edge cases are not run yet (list below) |
+>
+> Verification §4, checked live on 2026-11-03 with `Robert-547/Vercel_Integration_test`:
+> - ✅ Settings: key saved and the workspace listed (the deploy ran under it).
+> - ✅ Configure: Backend card pre-flight passed; **Deploy to Render** enabled.
+> - ✅ Deploy (`4419089`, manual):
+>   - created `vercel-integration-test-backend` (node, oregon, free, 2 env vars,
+>     `NODE_VERSION=20`);
+>   - adopted the deploy Render started on creation, because it built our SHA;
+>   - streamed Render's build and app log;
+>   - status queued → building → live;
+>   - health probe `GET /` → HTTP 200;
+>   - live at `https://vercel-integration-test-backend.onrender.com`.
+> - ✅ Push-to-deploy (`27e3424`, trigger `push`): only the backend redeployed, on the same service.
+>   No Vercel deploy was created for that commit.
+> - ✅ Vercel deploys still work: the frontend went live from the same commit (`4419089`).
+> - ⬜ Not checked yet:
+>   - env var echo (`GREETING=hi`), and that the value never appears in our log;
+>   - a broken start command → failed, with the hint;
+>   - cancel mid-build;
+>   - restart `render_integration` mid-build → resume;
+>   - removed GitHub access → `render_repo_access`;
+>   - the service stopped → "Unavailable";
+>   - a second user → 404.
 >
 > Where the code departs from the text below, and why:
 > - **Only `autoDeployTrigger: "off"` is sent**, not also the older `autoDeploy: "no"`. Sending both
