@@ -16,6 +16,7 @@ export default defineConfig([
     "neondb_integration/**",
     "integration_common/**",
     "logs/**",
+    "ai/**",
     // Superseded copies kept for review (renamed xxx_*), not code.
     "**/xxx*",
     "next-env.d.ts",

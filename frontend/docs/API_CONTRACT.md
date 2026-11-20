@@ -479,6 +479,61 @@ Resuming opens a new stream. Lines already shown can come again in the backfill:
 | 503 | `log_proxy_disabled` | `LOGS_PROXY_TOKEN` is not set in the Vercel or Render service |
 | 404 | `not_found` | another user's deployment, project, component or stream |
 
+## AI assistant (Phase 13)
+
+On demand only. The backend builds the context (settings, deployments, errors-first log
+excerpts, runtime snapshots, pre-flight, the latest release, env var **keys**) and asks
+`backend/ai` (OpenAI `gpt-4o-mini`). Nothing is changed. Each call takes up to about a minute.
+
+| Method & path | Body | Returns |
+| --- | --- | --- |
+| `POST /api/projects/:projectId/ai/diagnose` | `{ question?, force? }` | `AnalysisView` of the whole project |
+| `POST /api/projects/:projectId/components/:componentId/ai/analyze` | `{ question?, deploymentId?, force? }` | `AnalysisView` of one component; `componentId` `docker` = the local Docker deploys |
+| `GET /api/projects/:projectId/ai/analyses?take=5` | | `AnalysisSummary[]`, newest first (max 50) |
+| `GET /api/ai/analyses/:id` | | `AnalysisView` |
+| `POST /api/ai/analyses/:id/feedback` | `{ helpful: boolean }` | `{ id, helpful }` |
+
+`question` is at most 500 characters. `force: true` skips the 10-minute cache. `deploymentId` must
+belong to that component.
+
+```ts
+type AnalysisView = {
+  id: string; projectId: string; scope: "project" | "component";
+  componentId: string | null; deploymentId: string | null; question: string | null;
+  engine: "openai" | "rules"; model: string | null; cached: boolean; createdAt: string;
+  result: AnalysisResult;
+  notice: string | null;   // why it is rule-based, what was trimmed or missing
+  usage: { promptTokens: number; completionTokens: number; durationMs: number } | null;
+  helpful: boolean | null;
+};
+type AnalysisResult = {
+  verdict: "healthy" | "degraded" | "failing" | "unknown";
+  summary: string;
+  problems: Array<{ id: string; title: string; severity: "low" | "medium" | "high" | "critical";
+    category: string; componentIds: string[]; rootCause: string; confidence: number;
+    evidence: Array<{ componentId: string | null; source: string; line: string; deploymentId: string | null }> }>;
+  steps: Array<{ order: number; title: string; detail: string; problemIds: string[];
+    where: "configure" | "settings" | "environment" | "repository" | "provider_dashboard" | "redeploy";
+    componentId: string | null; command: string | null; file: string | null; envKey: string | null }>;
+  components: Array<{ componentId: string; status: "ok" | "warning" | "failing" | "unknown"; note: string }>;
+  providerNotes: string | null;
+  followUps: string[];
+};
+```
+
+Every evidence `line` is one the logs really contain (others are dropped by the service).
+
+| Status | `error` | When |
+| --- | --- | --- |
+| 400 | `bad_request` | a question over 500 characters, a bad body |
+| 404 | `not_found` | another user's project, component, deployment or analysis |
+| 409 | `ai_busy` | an analysis of this project is already running |
+| 429 | `ai_rate_limited` | 20 analyses an hour or 100 a day |
+| 503 | `ai_service_unavailable` | `backend/ai` is not running, or `AI_SERVICE_TOKEN` differs |
+
+Without `OPENAI_API_KEY`, or when OpenAI fails, the answer is rule-based (`engine: "rules"`) with
+the reason in `notice`; it is not an error.
+
 ## Repositories
 
 Live on the backend (under `/api`). Read with the signed-in user's own GitHub token, so a user only

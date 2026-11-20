@@ -526,16 +526,28 @@ as a whole.
 
 ---
 
-## Phase 13 — AI Assistant ⬜ (only after 6–12 are reliable)
+## Phase 13 — AI Assistant 🟡 (code complete 2026-11-20; awaits the migration and a live check)
 
-- ⬜ `ai/` module using the Claude API (`claude-sonnet-5` by default)
-- ⬜ `POST /api/deployments/:id/ask` — context: provider, framework, status, last ~500 log lines,
-  env var **keys only** (never values), analysis result
-- ⬜ The combined, time-ordered log of a release (Phase 12 deliberately has none): read each
-  deployment's entries from `backend/logs` (`GET /deployments/:id/entries`) and merge them by `at`
-- ⬜ System prompt: diagnose, cite log lines, suggest a concrete fix; never invent env values
-- ⬜ UI: "Ask AI" on failed deployments, with a streamed answer
-- ⬜ Rate limit per user; redact again before sending
+Plan: `Plans/Plans_Remaining/PLAN_PHASE_13.md`. **Model change (decided 2026-11-20):** OpenAI
+`gpt-4o-mini` instead of the Claude API, chosen by the user.
+
+- ✅ New service `backend/ai` (:3006, Fastify + Prisma, schema `ai`), the only holder of
+  `OPENAI_API_KEY`; on demand only. The Groq demo (`lib/log-analysis`) is retired (`xxx_` files)
+  and `groq-sdk` removed
+- ✅ Two scopes: **Diagnose with AI** (the whole project: verdict, problems, ordered steps, status
+  per component) and **Analyze** one entity (Vercel, Render, Neon, Docker), each with an optional
+  question
+- ✅ Context built by the backend: settings, last 5 deployments, errors-first log excerpts and
+  runtime snapshots (new `backend/logs` routes), pre-flight, latest release, repo analysis, env
+  var **keys only**; every secret value scrubbed from the whole bundle
+- ✅ The combined, time-ordered timeline exists only inside the prompt
+- ✅ Rules as hypotheses, a token budget, strict Structured Outputs, an evidence guard, a filter
+  for destructive commands, and a rule-based fallback without a key
+- ✅ 20 an hour / 100 a day per user, one at a time per project, a 10-minute cache
+- ✅ UI: project page (header, rows, AI section, past analyses), Logs page tab, build page
+  ("Ask AI why it failed")
+- ⬜ Apply the `ai` migration (Docker Postgres on :5433), set `OPENAI_API_KEY`, run `npm run spike`
+  and the manual checks of the plan
 
 ---
 

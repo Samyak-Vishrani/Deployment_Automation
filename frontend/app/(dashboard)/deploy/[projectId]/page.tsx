@@ -3,7 +3,10 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { AiAnalysisPanel } from "@/components/AiAnalysisPanel";
+import { AiHistory } from "@/components/AiHistory";
 import { AnalysisPanel } from "@/components/AnalysisPanel";
+import { AskAiButton } from "@/components/AskAiButton";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
@@ -30,6 +33,7 @@ import {
   type DeployProject,
   type DeployRun,
   type EnvironmentView,
+  type AnalysisView,
   type Release,
   type ReleaseStatus,
 } from "@/lib/deploy/types";
@@ -63,6 +67,8 @@ export default function DeployProjectPage() {
   const [env, setEnv] = useState<EnvironmentView | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // Phase 13: the AI analysis on screen (the latest one asked for, or one reopened from the history).
+  const [aiView, setAiView] = useState<AnalysisView | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -167,6 +173,11 @@ export default function DeployProjectPage() {
   }
 
   const componentNames = new Map(components.map((c) => [c.id, c.name]));
+  const aiNames: Record<string, string> = { ...Object.fromEntries(componentNames), docker: "Docker (local)" };
+  const showAi = (view: AnalysisView) => {
+    setAiView(view);
+    requestAnimationFrame(() => document.getElementById("ai-assistant")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
   const pendingEnv = new Set(env?.components.filter((c) => c.pendingRedeploy).map((c) => c.componentId) ?? []);
   const providerComponents = components.filter((c) => c.provider !== "local_docker");
   const latestRelease = releases[0] ?? null;
@@ -221,6 +232,7 @@ export default function DeployProjectPage() {
             <Link className="button button-secondary" href={`/deploy/${projectId}/logs`}>
               <Icon name="terminal" size={14} /> Logs
             </Link>
+            <AskAiButton target={{ scope: "project", projectId }} label="Diagnose with AI" onResult={showAi} />
             {providerComponents.length > 0 ? (
               <button
                 className="button button-primary"
@@ -482,6 +494,12 @@ export default function DeployProjectPage() {
                     )}
                   </td>
                   <td>
+                    <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <AskAiButton
+                      target={{ scope: "component", projectId, componentId: component.id }}
+                      label="Analyze"
+                      onResult={showAi}
+                    />
                     {CAN_DEPLOY.has(component.provider) && component.provider !== "local_docker" ? (
                       <button
                         className="button button-secondary"
@@ -500,6 +518,7 @@ export default function DeployProjectPage() {
                             : "Deploy"}
                       </button>
                     ) : null}
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -569,6 +588,39 @@ export default function DeployProjectPage() {
           </div>
         </>
       ) : null}
+
+      <div className="section-heading" id="ai-assistant">
+        <div>
+          <h2>AI assistant</h2>
+          <p>
+            On demand: what is wrong (if anything) and the steps to fix it, for the whole project or one component.
+          </p>
+        </div>
+        <span style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {project.currentImageTag || runs.length > 0 ? (
+            <AskAiButton
+              target={{ scope: "component", projectId, componentId: "docker" }}
+              label="Analyze Docker"
+              onResult={showAi}
+            />
+          ) : null}
+          <AskAiButton target={{ scope: "project", projectId }} label="Diagnose with AI" primary onResult={showAi} />
+        </span>
+      </div>
+      {aiView ? (
+        <AiAnalysisPanel
+          key={aiView.id}
+          view={aiView}
+          projectId={projectId}
+          componentNames={aiNames}
+          onClose={() => setAiView(null)}
+        />
+      ) : (
+        <div className="panel panel-pad empty-inline">
+          Nothing analysed yet. Diagnose the whole project, or Analyze one component from its row above.
+        </div>
+      )}
+      <AiHistory projectId={projectId} componentNames={aiNames} refreshKey={aiView?.id ?? null} onOpen={showAi} />
 
       <AnalysisPanel projectId={projectId} />
 

@@ -1,3 +1,6 @@
+import { AiServiceClient } from "@/lib/ai/ai-service.client";
+import { AiService } from "@/lib/ai/ai.service";
+import { AiContextBuilder } from "@/lib/ai/context-builder";
 import { AnalysisService } from "@/lib/analysis/analysis.service";
 import { ComponentsService } from "@/lib/components/components.service";
 import prisma from "@/lib/db/prisma";
@@ -44,6 +47,8 @@ export interface Runtime {
   logsClient: LogsServiceClient;
   /** Live runtime logs per component, with ownership and env-secret redaction (Phase 12). */
   runtimeLogs: RuntimeLogsService;
+  /** The AI assistant: gathers the context and asks backend/ai (Phase 13). */
+  ai: AiService;
   deployments: DeploymentsService;
   projects: ProjectsService;
   analysis: AnalysisService;
@@ -107,6 +112,7 @@ function build(): Runtime {
   );
   const releases = new ReleasesService(prisma, github, events, components, providerDeployments, sink);
   const runtimeLogs = new RuntimeLogsService(prisma, logsClient, envVars, neon);
+  const ai = new AiService(new AiServiceClient(), new AiContextBuilder(prisma, components, envVars, releases, logsClient));
   const executor = new DeployExecutor(prisma, github, docker, logs, events, envVars);
 
   // The queue is constructed before the executor exists, so the runner is
@@ -122,6 +128,7 @@ function build(): Runtime {
     logs,
     logsClient,
     runtimeLogs,
+    ai,
     deployments,
     projects,
     analysis,

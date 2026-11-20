@@ -36,6 +36,10 @@ Backend :3001  ⇄  Logs :3005                 backend/logs — its own service 
                     ↓                          build logs (JSONL per deployment) + live runtime tails
                   /log-proxy on :3002 / :3003  read-only routes that add the provider token (Phase 12)
 
+Backend :3001  →  AI :3006                   backend/ai — its own service (Fastify + Prisma, Postgres schema "ai")
+                    ↓                          rules → token budget → combined timeline → prompt → validate
+                  OpenAI gpt-4o-mini          structured output; the only holder of OPENAI_API_KEY (Phase 13)
+
 backend/integration_common                    shared plumbing the services import (no process)
 ```
 
@@ -168,6 +172,16 @@ cd backend/logs
 cp .env.example .env     # then fill in the two tokens, see "Logs"
 npm install
 npm run dev              # :3005
+```
+
+Terminal 7 (AI assistant, Phase 13):
+
+```bash
+cd backend/ai
+cp .env.example .env     # then fill in the token and OPENAI_API_KEY, see "AI assistant"
+npm install
+npx prisma migrate deploy  # creates the "ai" schema
+npm run dev              # :3006
 ```
 
 `backend/integration_common` is not started: `npm install` in each service links it. Run
@@ -377,8 +391,8 @@ as `CORS_ORIGIN=https://<project>.vercel.app`.
 
 All log code lives in one service, `backend/logs` (:3005). Every view shows **one** component
 (or one deployment) at a time: Vercel's and Render's logs are never mixed. The combined,
-time-ordered log is left for the AI assistant (Phase 13), which reads each deployment's entries
-from this service.
+time-ordered log exists only inside the AI assistant's prompt (Phase 13), which reads
+errors-first excerpts and runtime snapshots from this service.
 
 | View | Where | Stored? |
 | --- | --- | --- |
@@ -421,17 +435,59 @@ Runtime limits: at most 3 open streams per user. A stream ends after 15 minutes 
    `backend/vercel_integration/.env` and `backend/render_integration/.env`.
 2. Start Terminal 6, and restart the Vercel and Render services so they read `LOGS_PROXY_TOKEN`.
 
+## AI assistant
+
+On demand only: nothing runs until you click, and nothing is ever changed for you.
+
+| Button | Where | Looks at |
+| --- | --- | --- |
+| **Diagnose with AI** | the project page (header, and the AI assistant section) | the whole project: every component's settings, last 5 deployments, latest build log excerpt and runtime snapshot; the latest Deploy all; pre-flight; the repo analysis; env var **keys**; and a combined, time-ordered timeline of all of it |
+| **Analyze** | a component row; **Logs → \<component\>**; the build page (**Ask AI why it failed**) | one entity on its own (Vercel, Render, Neon, or the local Docker deploys), with a bigger log budget, its last successful build for comparison, and its provider's known failure modes |
+
+Each answer has a verdict (*healthy*, *degraded*, *failing*, *unknown*), the problems found (with
+the components, the root cause, a confidence and the log lines that show it, each linking to that
+log), the ordered steps to fix them (and where: Configure, Environment, Settings, the repository,
+the provider dashboard, redeploy), and a status per component. An optional question (up to 500
+characters) focuses it.
+
+**How it works.** The backend checks ownership and builds the context bundle (it can read the
+database, env var keys and pre-flight; the AI service cannot). Log content comes from
+`backend/logs` as errors-first excerpts: every error line with 5 lines either side, the first 20
+and last 150 lines, repeats collapsed. `backend/ai` then runs rule-based checks (missing env var,
+port binding, start command, database connection, API URL, CORS, out of memory, …) as hypotheses,
+trims the bundle to about 24k tokens, and asks `gpt-4o-mini` for a strictly-typed JSON answer.
+Every quoted log line is checked against the real logs; one that is not there is dropped, and its
+problem marked unverified. Destructive or secret-writing commands are removed.
+
+**What is sent to OpenAI:** redacted logs, settings and env var **keys**. Never env var values,
+connection strings or provider tokens: the backend scrubs every secret env value of the project
+and any `user:password@` from the whole bundle, and the AI service redacts again before sending.
+
+**Without `OPENAI_API_KEY`**, or when OpenAI fails, you still get a rule-based answer, labelled
+"rules only", with the reason.
+
+**Limits:** 20 analyses an hour and 100 a day per user; one at a time per project. The same
+question about an unchanged project within 10 minutes returns the stored answer (`cached`);
+**Re-run** asks again.
+
+**Setup**
+1. Generate a new token for `AI_SERVICE_TOKEN` and put it in `backend/.env` and `backend/ai/.env`.
+2. Put your `OPENAI_API_KEY` in `backend/ai/.env` (the model is `OPENAI_MODEL`, default
+   `gpt-4o-mini`). `npm run spike` in `backend/ai` checks the key, the model and the cost of one call.
+3. `npx prisma migrate deploy` in `backend/ai`, then start Terminal 7.
+
 ## Tests
 
 ```bash
-cd backend  && npm test        # 382 unit tests (analysis, detection, components, pre-flight, push filter, GitHub, auth, provider deploys, releases, env vars, logs seam)
+cd backend  && npm test        # 389 unit tests (analysis, detection, components, pre-flight, push filter, GitHub, auth, provider deploys, releases, env vars, logs seam)
 cd backend  && npm run test:e2e  # drives the real webhook route against a running backend
 cd frontend && npm test
 cd backend/vercel_integration && npm test   # Vercel provider, upload, credentials, outbox, runner, API
 cd backend/render_integration && npm test   # Render provider, env sync, credentials, outbox adapter, runner, API
 cd backend/neondb_integration && npm test   # Neon provider, provisioning, credentials, API
 cd backend/integration_common && npm test   # shared plumbing: secret-box, outbox, queue, fetch, callbacks, env vault + hash, ndjson
-cd backend/logs && npm test                 # log store, ingest + stream routes, Render/Vercel/Docker tailers, sessions
+cd backend/logs && npm test                 # log store, ingest + stream routes, Render/Vercel/Docker tailers, sessions, AI excerpts + snapshots
+cd backend/ai && npm test                   # rules, budget, timeline, prompts, validation + evidence guard, cache, limits, rule-based fallback
 ```
 
 The e2e script signs real HMAC payloads and asserts on the resulting database rows, so it covers
@@ -464,6 +520,8 @@ Backend (`backend/.env`):
 | `NEON_SERVICE_TOKEN` | shared with the Neon service only; sent on every call to it |
 | `LOGS_SERVICE_URL` | the logs service; default `http://127.0.0.1:3005` |
 | `LOGS_SERVICE_TOKEN` | shared with the logs service only; sent on every call to it |
+| `AI_SERVICE_URL` | the AI service; default `http://127.0.0.1:3006` |
+| `AI_SERVICE_TOKEN` | shared with the AI service only; sent on every call to it |
 
 Vercel integration (`backend/vercel_integration/.env`):
 
@@ -508,6 +566,18 @@ Logs (`backend/logs/.env`):
 | `LEGACY_LOG_DIR` | pre-Phase-12 logs, read only (default `../data/logs`) |
 | `HOST` / `PORT` | default `127.0.0.1:3005`; keep it on loopback |
 | `MAX_LOG_BYTES`, `RUNTIME_STREAM_MAX_MS`, `RUNTIME_IDLE_MS`, `RENDER_RUNTIME_POLL_MS`, `MAX_STREAMS_PER_USER` | optional (20 MB, 60 min, 15 min, 3000, 3) |
+
+AI (`backend/ai/.env`):
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | the same Postgres, with `?schema=ai` |
+| `AI_SERVICE_TOKEN` | the same value as in `backend/.env` |
+| `OPENAI_API_KEY` | optional; without it every analysis is rule-based |
+| `OPENAI_MODEL` | default `gpt-4o-mini` |
+| `OPENAI_BASE_URL`, `OPENAI_TIMEOUT_MS` | optional (OpenAI's API, 45000) |
+| `HOST` / `PORT` | default `127.0.0.1:3006`; keep it on loopback |
+| `AI_MAX_INPUT_TOKENS`, `AI_MAX_OUTPUT_TOKENS`, `AI_RATE_HOUR`, `AI_RATE_DAY`, `AI_CACHE_MINUTES` | optional (24000, 2500, 20, 100, 10) |
 
 `vercel_integration/.env` and `render_integration/.env` also take `LOGS_PROXY_TOKEN`. Leaving it
 unset turns their `/log-proxy` routes off, and runtime logs then answer 503.

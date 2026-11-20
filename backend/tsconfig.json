@@ -42,6 +42,7 @@
     "neondb_integration",
     "integration_common",
     "logs",
+    "ai",
     "**/xxx*"
   ]
 }

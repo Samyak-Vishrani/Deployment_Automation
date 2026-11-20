@@ -4,7 +4,22 @@ import {
   type IntegrationServiceConfig,
   type IntegrationServiceInfo,
 } from "@/lib/providers/integration-service.client";
-import type { LogPhase, LogSource, LogStream, LogsReadResult } from "./log-types";
+import type { LogEntry, LogPhase, LogSource, LogStream, LogsReadResult, RuntimeLogLine } from "./log-types";
+
+/** backend/logs' errors-first excerpt of one deployment's log (Phase 13). */
+export interface LogExcerpt {
+  entries: Array<LogEntry & { repeat?: number }>;
+  totalLines: number;
+  errorLines: number;
+  truncated: boolean;
+  status: string | null;
+}
+
+/** A component's recent runtime lines, read once (Phase 13). */
+export interface RuntimeSnapshot {
+  lines: RuntimeLogLine[];
+  note: string | null;
+}
 
 /**
  * Typed client for the logs service (backend/logs, :3005; Phase 12). It has
@@ -81,6 +96,27 @@ export class LogsServiceClient extends IntegrationServiceClient {
   /** NDJSON BuildStreamEvents, replayed from `afterSeq` then live. */
   openBuildStream(deploymentId: string, projectId: string, afterSeq: number, signal: AbortSignal): Promise<Response> {
     return this.openStream(`/deployments/${enc(deploymentId)}/stream?projectId=${enc(projectId)}&afterSeq=${afterSeq}`, signal);
+  }
+
+  /** The errors-first excerpt of one deployment's log (Phase 13, for the AI). */
+  excerpt(deploymentId: string, projectId: string, maxLines = 400): Promise<LogExcerpt> {
+    return this.call("GET", `/deployments/${enc(deploymentId)}/excerpt?projectId=${enc(projectId)}&maxLines=${maxLines}`);
+  }
+
+  /** A component's recent runtime lines, read once (Phase 13); Vercel answers with a note only. */
+  runtimeSnapshot(
+    userId: string,
+    componentId: string,
+    provider: "vercel" | "render",
+    options: { since: RuntimeStreamOptions["since"]; limit?: number },
+  ): Promise<RuntimeSnapshot> {
+    const query = new URLSearchParams({ userId, provider, since: options.since, limit: String(options.limit ?? 100) });
+    return this.call("GET", `/runtime/components/${enc(componentId)}/snapshot?${query}`);
+  }
+
+  dockerSnapshot(containerName: string, options: { since: RuntimeStreamOptions["since"]; limit?: number }): Promise<RuntimeSnapshot> {
+    const query = new URLSearchParams({ since: options.since, limit: String(options.limit ?? 100) });
+    return this.call("GET", `/runtime/docker/${enc(containerName)}/snapshot?${query}`);
   }
 
   // --------------------------------------------------------- runtime logs --

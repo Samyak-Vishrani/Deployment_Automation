@@ -12,6 +12,8 @@ import type {
   EnvPutEntry,
   EnvSuggestions,
   LogsIndex,
+  AnalysisSummary,
+  AnalysisView,
   PreflightResult,
   RuntimeSince,
   ConnectableProvider,
@@ -194,6 +196,30 @@ export const pingRuntimeLogs = (projectId: string, sessionId: string) =>
     undefined,
     withSession,
   );
+
+/** Phase 13: "Diagnose with AI", the whole project. Takes up to a minute. */
+export const diagnoseProject = (projectId: string, options: { question?: string; force?: boolean } = {}) =>
+  api.post<AnalysisView>(`/api/projects/${encodeURIComponent(projectId)}/ai/diagnose`, options, withSession);
+
+/** "Analyze with AI" for one component, or "docker" for the project's local Docker deploys. */
+export const analyzeComponent = (
+  projectId: string,
+  componentId: string,
+  options: { question?: string; deploymentId?: string | null; force?: boolean } = {},
+) =>
+  api.post<AnalysisView>(
+    `/api/projects/${encodeURIComponent(projectId)}/components/${encodeURIComponent(componentId)}/ai/analyze`,
+    options,
+    withSession,
+  );
+
+export const listAnalyses = (projectId: string, take = 5) =>
+  api.get<AnalysisSummary[]>(`/api/projects/${encodeURIComponent(projectId)}/ai/analyses?take=${take}`, withSession);
+
+export const getAnalysis = (id: string) => api.get<AnalysisView>(`/api/ai/analyses/${encodeURIComponent(id)}`, withSession);
+
+export const sendAnalysisFeedback = (id: string, helpful: boolean) =>
+  api.post<{ id: string; helpful: boolean }>(`/api/ai/analyses/${encodeURIComponent(id)}/feedback`, { helpful }, withSession);
 
 /** Absolute URL for an EventSource, which cannot use the api client's fetch. */
 export function streamUrl(path: string): string {

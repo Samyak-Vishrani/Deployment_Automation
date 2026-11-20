@@ -500,3 +500,68 @@ export type LogsIndex = {
 };
 
 export type RuntimeSince = "5m" | "15m" | "1h";
+
+// ---------------------------------------------------------- AI (Phase 13) --
+
+export type AiVerdict = "healthy" | "degraded" | "failing" | "unknown";
+export type AiStepWhere = "configure" | "settings" | "environment" | "repository" | "provider_dashboard" | "redeploy";
+
+export type AnalysisResult = {
+  verdict: AiVerdict;
+  summary: string;
+  problems: Array<{
+    id: string;
+    title: string;
+    severity: "low" | "medium" | "high" | "critical";
+    category: string;
+    componentIds: string[];
+    rootCause: string;
+    confidence: number;
+    evidence: Array<{ componentId: string | null; source: string; line: string; deploymentId: string | null }>;
+  }>;
+  steps: Array<{
+    order: number;
+    title: string;
+    detail: string;
+    problemIds: string[];
+    where: AiStepWhere;
+    componentId: string | null;
+    command: string | null;
+    file: string | null;
+    envKey: string | null;
+  }>;
+  components: Array<{ componentId: string; status: "ok" | "warning" | "failing" | "unknown"; note: string }>;
+  providerNotes: string | null;
+  followUps: string[];
+};
+
+/** One AI analysis: of the whole project, or of one component ("docker" = the local Docker deploys). */
+export type AnalysisView = {
+  id: string;
+  projectId: string;
+  scope: "project" | "component";
+  componentId: string | null;
+  deploymentId: string | null;
+  question: string | null;
+  engine: "openai" | "rules";
+  model: string | null;
+  cached: boolean;
+  createdAt: string;
+  result: AnalysisResult;
+  notice: string | null;
+  usage: { promptTokens: number; completionTokens: number; durationMs: number } | null;
+  helpful: boolean | null;
+};
+
+export type AnalysisSummary = {
+  id: string;
+  scope: "project" | "component";
+  componentId: string | null;
+  deploymentId: string | null;
+  question: string | null;
+  engine: "openai" | "rules";
+  verdict: AiVerdict | null;
+  summary: string | null;
+  createdAt: string;
+  helpful: boolean | null;
+};

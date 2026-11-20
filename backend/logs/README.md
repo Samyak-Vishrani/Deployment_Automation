@@ -64,6 +64,9 @@ All routes except `/health` need `x-internal-token: <LOGS_SERVICE_TOKEN>`.
 | `GET /runtime/components/:componentId/stream?userId=&provider=vercel\|render&since=5m\|15m\|1h&requests=0\|1` | NDJSON `RuntimeLogEvent`s; the session id is in `x-session-id` |
 | `GET /runtime/docker/:containerName/stream?userId=&since=` | the same, for `orbitops-<slug>` |
 | `POST /runtime/sessions/:sessionId/ping` | the viewer is still watching (resets the idle timer) |
+| `GET /deployments/:id/excerpt?projectId=&maxLines=400` | Phase 13, for the AI: the **errors-first** excerpt `{ entries, totalLines, errorLines, truncated, status }` (see below; `maxLines` ≤ 1500) |
+| `GET /runtime/components/:componentId/snapshot?userId=&provider=render\|vercel&since=&limit=100` | Phase 13: the recent runtime lines, read **once** `{ lines, note }`. Render: one newest-first page; Vercel: no lines, a note (it keeps no history) |
+| `GET /runtime/docker/:containerName/snapshot?since=&limit=100` | the same for the Docker container (`docker logs --tail`) |
 
 **The build stream is race-free:**
 1. it subscribes first;
@@ -71,6 +74,12 @@ All routes except `/health` need `x-internal-token: <LOGS_SERVICE_TOKEN>`.
 3. then passes on only the live entries past the last replayed `seq`.
 
 A line written during the replay is delivered exactly once.
+
+**The excerpt** (`src/entries/excerpt.ts`) keeps every error line with 5 lines either side, the
+first 20 and the last 150 lines, in `seq` order; runs of identical lines become one entry with
+`repeat: n`. When that is still over `maxLines` it narrows (2 lines of context, first 10, last
+60), and then to the error lines alone. Snapshots open no session and do not count against the
+3-stream limit.
 
 ## Runtime logs
 

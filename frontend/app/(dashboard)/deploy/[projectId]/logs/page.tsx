@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { AiAnalysisPanel } from "@/components/AiAnalysisPanel";
+import { AskAiButton } from "@/components/AskAiButton";
 import { LogPane, type PaneLine } from "@/components/LogPane";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -11,6 +13,7 @@ import { getDeployProject, getLogsIndex, logDownloadUrl } from "@/lib/deploy/cli
 import {
   pillStatus,
   PROVIDER_LABEL,
+  type AnalysisView,
   type DeployProject,
   type LogsIndex,
   type LogsIndexDeployment,
@@ -62,6 +65,8 @@ function LogsView() {
   const [project, setProject] = useState<DeployProject | null>(null);
   const [index, setIndex] = useState<LogsIndex | null>(null);
   const [error, setError] = useState("");
+  // Phase 13: the AI analysis of the open tab's component.
+  const [aiView, setAiView] = useState<AnalysisView | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -206,7 +211,30 @@ function LogsView() {
                     Open the build page <Icon name="arrow-up-right" size={11} />
                   </Link>
                 ) : null}
+                {tab.deployments.length > 0 ? (
+                  <span style={{ marginLeft: "auto" }}>
+                    <AskAiButton
+                      key={tab.id}
+                      target={{ scope: "component", projectId, componentId: tab.id, deploymentId: view === "build" ? deploymentId : null }}
+                      label={`Analyze ${tab.label.split(" · ")[0]} with AI`}
+                      primary={tab.deployments.find((d) => d.id === deploymentId)?.status === "failed"}
+                      onResult={setAiView}
+                    />
+                  </span>
+                ) : null}
               </div>
+
+              {aiView && (aiView.componentId === tab.id || aiView.scope === "project") ? (
+                <div style={{ marginBottom: 14 }}>
+                  <AiAnalysisPanel
+                    key={aiView.id}
+                    view={aiView}
+                    projectId={projectId}
+                    componentNames={Object.fromEntries(tabs.map((t) => [t.id, t.label.split(" · ")[0]]))}
+                    onClose={() => setAiView(null)}
+                  />
+                </div>
+              ) : null}
 
               {view === "build" ? (
                 deploymentId ? (

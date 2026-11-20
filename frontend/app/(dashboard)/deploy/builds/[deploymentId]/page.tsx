@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { AiAnalysisPanel } from "@/components/AiAnalysisPanel";
+import { AskAiButton } from "@/components/AskAiButton";
 import { LogPane, type PaneLine } from "@/components/LogPane";
 import { Icon } from "@/components/ui/Icon";
 import { StatusPill } from "@/components/ui/StatusPill";
@@ -12,6 +14,7 @@ import {
   isFinished,
   pillStatus,
   PROVIDER_LABEL,
+  type AnalysisView,
   type DeploymentStatus,
   type DeployRun,
 } from "@/lib/deploy/types";
@@ -24,6 +27,8 @@ export default function BuildPage() {
   const [run, setRun] = useState<DeployRun | null>(null);
   const [componentName, setComponentName] = useState<string | null>(null);
   const [error, setError] = useState("");
+  // Phase 13: "Ask AI about this deployment".
+  const [aiView, setAiView] = useState<AnalysisView | null>(null);
   // Phase 12: structured lines, resumed by seq after a reconnect.
   const log = useBuildLogStream(deploymentId);
 
@@ -110,6 +115,14 @@ export default function BuildPage() {
           </div>
         </div>
         <div className="run-actions">
+          {run && status && !live ? (
+            <AskAiButton
+              target={{ scope: "component", projectId: run.projectId, componentId: run.componentId ?? "docker", deploymentId: run.id }}
+              label={status === "failed" ? "Ask AI why it failed" : "Ask AI about this deployment"}
+              primary={status === "failed"}
+              onResult={setAiView}
+            />
+          ) : null}
           {run?.inspectorUrl ? (
             <a className="button button-secondary" href={run.inspectorUrl} target="_blank" rel="noreferrer">
               View on {PROVIDER_LABEL[run.provider]} <Icon name="external" size={13} />
@@ -144,6 +157,18 @@ export default function BuildPage() {
         <div className="form-error" style={{ marginBottom: 14 }}>
           <Icon name="circle-help" size={14} />
           <span>{run.errorMessage}</span>
+        </div>
+      ) : null}
+
+      {aiView && run ? (
+        <div style={{ marginBottom: 14 }}>
+          <AiAnalysisPanel
+            key={aiView.id}
+            view={aiView}
+            projectId={run.projectId}
+            componentNames={{ [run.componentId ?? "docker"]: where ?? "this component" }}
+            onClose={() => setAiView(null)}
+          />
         </div>
       ) : null}
 

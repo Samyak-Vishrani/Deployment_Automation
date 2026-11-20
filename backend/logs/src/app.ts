@@ -3,6 +3,7 @@ import { pipeNdjson } from "@orbitops/integration-common/ndjson";
 import { ProviderError, ServiceError } from "@orbitops/integration-common/provider-error";
 import Fastify, { type FastifyInstance } from "fastify";
 import { entryToText } from "./entries/entry-text";
+import { excerpt } from "./entries/excerpt";
 import { assertId, intQuery, parseIngest } from "./entries/ingest-input";
 import { buildLogStream } from "./routes/build-stream";
 import { registerRuntimeRoutes, type RuntimeDeps } from "./routes/runtime-logs";
@@ -83,6 +84,17 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       afterSeq: intQuery(request.query.afterSeq, 0),
       limit: intQuery(request.query.limit, 5000, 5000),
     });
+  });
+
+  /**
+   * The errors-first excerpt of one deployment's log (Phase 13, for the AI):
+   * error lines with their context, the first and last lines, repeats collapsed.
+   */
+  app.get<DeploymentRoute & { Querystring: { projectId?: string; maxLines?: string } }>("/deployments/:deploymentId/excerpt", async (request) => {
+    const deploymentId = assertId(request.params.deploymentId, "deploymentId");
+    const projectId = assertId(request.query.projectId, "projectId");
+    const { entries, status } = await deps.store.read(deploymentId, projectId, { limit: Number.MAX_SAFE_INTEGER });
+    return { ...excerpt(entries, { maxLines: intQuery(request.query.maxLines, 400, 1500) }), status };
   });
 
   app.get<DeploymentRoute & ReadQuery>("/deployments/:deploymentId/text", async (request, reply) => {

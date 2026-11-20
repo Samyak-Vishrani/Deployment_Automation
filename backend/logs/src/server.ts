@@ -6,6 +6,7 @@ import { tailDocker } from "./runtime/docker-tail";
 import { ProxyClient } from "./runtime/proxy-client";
 import { tailRender } from "./runtime/render-tail";
 import { RuntimeSessions } from "./runtime/runtime-session";
+import { dockerSnapshot, renderSnapshot, VERCEL_SNAPSHOT } from "./runtime/snapshot";
 import { tailVercel } from "./runtime/vercel-tail";
 import { LogStore } from "./store/log-store";
 
@@ -36,6 +37,11 @@ async function main(): Promise<void> {
         render: (userId, componentId, opts, signal) =>
           tailRender(proxy, userId, componentId, { ...opts, pollMs: config.renderPollMs, signal }),
         docker: (containerName, opts, signal) => tailDocker(containerName, { ...opts, signal }),
+      },
+      snapshots: {
+        render: (userId, componentId, opts, signal) => renderSnapshot(proxy, userId, componentId, { ...opts, signal }),
+        vercel: () => VERCEL_SNAPSHOT,
+        docker: (containerName, opts) => dockerSnapshot(containerName, opts),
       },
     },
     logger: process.env.LOG_REQUESTS === "1",

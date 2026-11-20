@@ -1,0 +1,50 @@
+// The AI service's own data (Phase 13): the analyses it ran, which are also
+// its cache and its rate-limit ledger.
+//
+// It lives in its own Postgres schema ("ai", selected by `?schema=ai` in
+// DATABASE_URL), next to the other services' schemas but never joined with
+// them. userId / projectId / componentId belong to the main backend and are
+// plain strings here. No env var value and no connection string is ever
+// stored: the context bundle the backend posts holds keys only, and is not
+// kept, only its hash.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AiAnalysis {
+  id               String   @id @default(cuid())
+  userId           String
+  projectId        String
+  /// project | component
+  scope            String   @db.VarChar(20)
+  componentId      String?
+  deploymentId     String?
+  question         String?  @db.Text
+  /// sha256 of the (redacted) bundle + scope + question: the cache key.
+  inputHash        String   @db.VarChar(64)
+  /// openai | rules
+  engine           String   @db.VarChar(20)
+  model            String?  @db.VarChar(60)
+  /// done | failed
+  status           String   @db.VarChar(20)
+  /// The validated AnalysisResult.
+  result           Json?
+  /// Why the answer is rule-based, or why it failed.
+  notice           String?  @db.Text
+  promptTokens     Int?
+  completionTokens Int?
+  durationMs       Int?
+  /// The user's thumbs up / down.
+  helpful          Boolean?
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([inputHash, createdAt])
+}

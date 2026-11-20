@@ -13,6 +13,7 @@ export default defineConfig({
       "neondb_integration/**",
       "integration_common/**",
       "logs/**",
+      "ai/**",
       // Files renamed xxx_* are superseded copies kept for review, not code.
       "**/xxx*",
     ],

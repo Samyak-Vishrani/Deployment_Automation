@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import type { NdjsonSink } from "@orbitops/integration-common/ndjson";
 import { assertId } from "../entries/ingest-input";
 import type { RuntimeSessions } from "../runtime/runtime-session";
+import type { Snapshot } from "../runtime/snapshot";
 
 /** Builds a tailer for one viewer; the signal stops it. */
 export interface Tailers {
@@ -13,9 +14,17 @@ export interface Tailers {
   docker(containerName: string, opts: { sinceMs: number }, signal: AbortSignal): AsyncGenerator<RuntimeLogEvent>;
 }
 
+/** One-off reads of recent runtime lines (Phase 13, for the AI); no stream, no session. */
+export interface Snapshots {
+  render(userId: string, componentId: string, opts: { sinceMs: number; limit: number }, signal: AbortSignal): Promise<Snapshot>;
+  vercel(): Snapshot;
+  docker(containerName: string, opts: { sinceMs: number; limit: number }): Promise<Snapshot>;
+}
+
 export interface RuntimeDeps {
   sessions: RuntimeSessions;
   tailers: Tailers;
+  snapshots?: Snapshots;
 }
 
 const SINCE: Record<string, number> = { "5m": 5 * 60_000, "15m": 15 * 60_000, "1h": 60 * 60_000 };
@@ -72,6 +81,33 @@ export function registerRuntimeRoutes(app: FastifyInstance, deps: RuntimeDeps, h
     const sinceMs = parseSince(request.query.since);
     const containerName = request.params.containerName;
     return stream(reply, userId, (signal) => deps.tailers.docker(containerName, { sinceMs }, signal));
+  });
+
+  // ------------------------------------------------- snapshots (phase 13) --
+  type ComponentSnapshot = {
+    Params: { componentId: string };
+    Querystring: { userId?: string; provider?: string; since?: string; limit?: string };
+  };
+  type DockerSnapshot = { Params: { containerName: string }; Querystring: { since?: string; limit?: string } };
+  const limitOf = (value: unknown) => Math.min(Math.max(Number(value ?? 100) || 100, 1), 500);
+
+  /** `{ lines, note }`: the component's recent runtime lines, read once. */
+  app.get<ComponentSnapshot>("/runtime/components/:componentId/snapshot", async (request, reply) => {
+    if (!deps.snapshots) throw badRequest("Runtime snapshots are not configured.");
+    const componentId = assertId(request.params.componentId, "componentId");
+    const userId = assertId(request.query.userId, "userId");
+    const sinceMs = parseSince(request.query.since);
+    const limit = limitOf(request.query.limit);
+    const abort = new AbortController();
+    reply.raw.once("close", () => abort.abort());
+    if (request.query.provider === "render") return deps.snapshots.render(userId, componentId, { sinceMs, limit }, abort.signal);
+    if (request.query.provider === "vercel") return deps.snapshots.vercel();
+    throw badRequest("provider must be vercel or render.");
+  });
+
+  app.get<DockerSnapshot>("/runtime/docker/:containerName/snapshot", async (request) => {
+    if (!deps.snapshots) throw badRequest("Runtime snapshots are not configured.");
+    return deps.snapshots.docker(request.params.containerName, { sinceMs: parseSince(request.query.since), limit: limitOf(request.query.limit) });
   });
 
   app.post<{ Params: { sessionId: string } }>("/runtime/sessions/:sessionId/ping", async (request) => {
