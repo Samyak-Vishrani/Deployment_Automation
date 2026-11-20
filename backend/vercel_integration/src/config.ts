@@ -4,6 +4,8 @@
  * 500 on the first deploy.
  */
 
+import { baseUrl, positiveInt, requireEnv, requireSecretLength } from "@orbitops/integration-common/config-helpers";
+
 export interface ServiceConfig {
   host: string;
   port: number;
@@ -17,50 +19,39 @@ export interface ServiceConfig {
   deployConcurrency: number;
   pollIntervalMs: number;
   deployTimeoutMs: number;
+  /** Phase 12: the token backend/logs sends to /log-proxy. Optional: unset turns the proxy off. */
+  logsProxyToken: string | null;
 }
 
-export class MissingEnvError extends Error {
-  constructor(readonly missing: string[]) {
-    super(
-      `Missing required environment variable(s): ${missing.join(", ")}. ` +
-        "Copy vercel_integration/.env.example to .env and fill them in.",
-    );
-    this.name = "MissingEnvError";
+export { MissingEnvError } from "@orbitops/integration-common/config-helpers";
+
+const FOLDER = "vercel_integration";
+
+/** LOGS_PROXY_TOKEN, checked: long enough, and never the internal token (each opens different doors). */
+function logsProxyToken(env: NodeJS.ProcessEnv): string | null {
+  const value = env.LOGS_PROXY_TOKEN?.trim();
+  if (!value) return null;
+  requireSecretLength(env, ["LOGS_PROXY_TOKEN"]);
+  if (value === env.INTERNAL_SERVICE_TOKEN?.trim()) {
+    throw new Error("LOGS_PROXY_TOKEN must differ from INTERNAL_SERVICE_TOKEN.");
   }
-}
-
-const MIN_SECRET_LENGTH = 32;
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  return value;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServiceConfig {
-  const required = ["DATABASE_URL", "INTERNAL_SERVICE_TOKEN", "INTERNAL_CALLBACK_SECRET"] as const;
-  const missing: string[] = required.filter((key) => !env[key]?.trim());
-  if (env.NODE_ENV === "production" && !env.ENCRYPTION_KEY?.trim()) {
-    missing.push("ENCRYPTION_KEY");
-  }
-  if (missing.length > 0) {
-    throw new MissingEnvError(missing);
-  }
-
-  for (const key of ["INTERNAL_SERVICE_TOKEN", "INTERNAL_CALLBACK_SECRET"] as const) {
-    if (env[key]!.trim().length < MIN_SECRET_LENGTH) {
-      throw new Error(`${key} must be at least ${MIN_SECRET_LENGTH} characters (use: openssl rand -hex 32).`);
-    }
-  }
+  requireEnv(env, ["DATABASE_URL", "INTERNAL_SERVICE_TOKEN", "INTERNAL_CALLBACK_SECRET"], FOLDER);
+  requireSecretLength(env, ["INTERNAL_SERVICE_TOKEN", "INTERNAL_CALLBACK_SECRET"]);
 
   return {
     host: env.HOST?.trim() || "127.0.0.1",
     port: positiveInt(env.PORT, 3002),
     internalServiceToken: env.INTERNAL_SERVICE_TOKEN!.trim(),
-    mainApiUrl: (env.MAIN_API_URL?.trim() || "http://localhost:3001").replace(/\/+$/, ""),
+    mainApiUrl: baseUrl(env.MAIN_API_URL, "http://localhost:3001"),
     internalCallbackSecret: env.INTERNAL_CALLBACK_SECRET!.trim(),
-    vercelApiBase: (env.VERCEL_API_BASE?.trim() || "https://api.vercel.com").replace(/\/+$/, ""),
+    vercelApiBase: baseUrl(env.VERCEL_API_BASE, "https://api.vercel.com"),
     deployConcurrency: positiveInt(env.DEPLOY_CONCURRENCY, 8),
     pollIntervalMs: positiveInt(env.VERCEL_POLL_INTERVAL_MS, 3000),
     deployTimeoutMs: positiveInt(env.VERCEL_DEPLOY_TIMEOUT_MIN, 45) * 60 * 1000,
+    logsProxyToken: logsProxyToken(env),
   };
 }

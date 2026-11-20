@@ -50,6 +50,18 @@ model VercelProject {
   gitLinked       Boolean  @default(false)
   /// Hash of the build settings last sent to Vercel; unchanged = no PATCH.
   settingsHash    String   @db.VarChar(64)
+  /// Hash of the public env vars last set (the backend's URL, Phase 8);
+  /// unchanged = no env calls. Null until any were set.
+  envHash         String?  @db.VarChar(64)
+  /// Keys this service set on the project, so the ones no longer wanted can be
+  /// removed without touching variables the user added on Vercel.
+  managedEnvKeys  Json     @default("[]")
+  /// Hash of the user's env vars last set (Phase 9; values and secret flags,
+  /// never stored themselves); unchanged = no env calls.
+  userEnvHash        String? @db.VarChar(64)
+  /// [{ key, secret }] this service set from the user's env vars, so the ones
+  /// no longer wanted are removed and a flipped secret flag is re-created.
+  managedUserEnvKeys Json    @default("[]")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

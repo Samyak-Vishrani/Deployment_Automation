@@ -1,6 +1,6 @@
-import { redact } from "../common/redact";
-import { NetworkError, providerFetch, type ProviderFetchOptions, type ProviderResponse } from "../http/provider-fetch";
-import { ProviderError } from "../http/provider-error";
+import { redact } from "@orbitops/integration-common/redact";
+import { NetworkError, providerFetch, type ProviderFetchOptions, type ProviderResponse } from "@orbitops/integration-common/provider-fetch";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 
 /** Who a Render call is made as. Render API keys are account-wide; the workspace is in each body/query. */
 export interface RenderContext {

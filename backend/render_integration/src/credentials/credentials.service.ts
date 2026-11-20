@@ -1,7 +1,7 @@
 import type { Prisma, RenderCredential } from "@prisma/client";
 import { open, seal } from "../crypto/secret-box";
 import type { Db } from "../db";
-import { badRequest, conflict, ProviderError } from "../http/provider-error";
+import { badRequest, conflict, ProviderError } from "@orbitops/integration-common/provider-error";
 import type { AccountInfo, Owner, RenderProvider } from "../render/render.provider";
 import type { ServiceDefaults } from "../render/service-settings";
 import type { Preferences } from "./credential-input";

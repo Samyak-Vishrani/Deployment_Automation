@@ -2,18 +2,23 @@ import { AnalysisService } from "@/lib/analysis/analysis.service";
 import { ComponentsService } from "@/lib/components/components.service";
 import prisma from "@/lib/db/prisma";
 import { DeployExecutor } from "@/lib/deployments/deploy-executor.service";
-import { DeploymentLogsService } from "@/lib/deployments/deployment-logs.service";
 import { DeploymentQueue } from "@/lib/deployments/deployment-queue";
 import { DeploymentsService } from "@/lib/deployments/deployments.service";
 import { DockerService } from "@/lib/docker/docker.service";
+import { EnvVarsService } from "@/lib/env/env-vars.service";
 import { EventsService } from "@/lib/events/events.service";
 import { GithubAppService } from "@/lib/github/github-app.service";
 import { GithubUserService } from "@/lib/github/github-user.service";
+import { LogsServiceClient } from "@/lib/logs/logs-service.client";
+import { RemoteLogs } from "@/lib/logs/remote-logs";
+import { RuntimeLogsService } from "@/lib/logs/runtime-logs.service";
 import { ProjectsService } from "@/lib/projects/projects.service";
+import { NeonServiceClient } from "@/lib/providers/neon-service.client";
 import { ProviderDeploymentsService } from "@/lib/providers/provider-deployments.service";
 import { ProviderLogSink } from "@/lib/providers/provider-log-sink";
 import { RenderServiceClient } from "@/lib/providers/render-service.client";
 import { VercelServiceClient } from "@/lib/providers/vercel-service.client";
+import { ReleasesService } from "@/lib/releases/releases.service";
 import { DeliveryStore } from "@/lib/webhooks/delivery-store";
 
 /**
@@ -33,17 +38,28 @@ export interface Runtime {
   githubUser: GithubUserService;
   docker: DockerService;
   queue: DeploymentQueue;
-  logs: DeploymentLogsService;
+  /** Build logs, kept by the logs service (backend/logs, :3005) since Phase 12. */
+  logs: RemoteLogs;
+  /** Client for the logs service: build-log streams and runtime logs. */
+  logsClient: LogsServiceClient;
+  /** Live runtime logs per component, with ownership and env-secret redaction (Phase 12). */
+  runtimeLogs: RuntimeLogsService;
   deployments: DeploymentsService;
   projects: ProjectsService;
   analysis: AnalysisService;
   components: ComponentsService;
+  /** Environment variables, per component and shared, sealed (Phase 9). */
+  envVars: EnvVarsService;
   /** Client for the vercel_integration service (backend/vercel_integration). */
   vercel: VercelServiceClient;
   /** Client for the render_integration service (backend/render_integration). */
   render: RenderServiceClient;
+  /** Client for the neondb_integration service (backend/neondb_integration). */
+  neon: NeonServiceClient;
   /** Deploys to external providers and applies the events they report back. */
   providerDeployments: ProviderDeploymentsService;
+  /** "Deploy all": a project's components in order, as one Release (Phase 8). */
+  releases: ReleasesService;
   deliveries: DeliveryStore;
   executor: DeployExecutor;
   bootstrapped?: Promise<void>;
@@ -57,31 +73,41 @@ function build(): Runtime {
   const githubUser = new GithubUserService(prisma);
   const docker = new DockerService();
   const queue = new DeploymentQueue();
-  const logs = new DeploymentLogsService();
+  const logsClient = new LogsServiceClient();
+  const logs = new RemoteLogs(logsClient);
   const deliveries = new DeliveryStore();
 
   const deployments = new DeploymentsService(prisma, queue, events);
-  const projects = new ProjectsService(prisma, github, githubUser, docker, events);
+  // The repo reader belongs to ComponentsService, built below; it is only called after build().
+  const envVars: EnvVarsService = new EnvVarsService(prisma, events, (project, path) => components.readRepoFile(project, path));
+  const projects = new ProjectsService(prisma, github, githubUser, docker, events, envVars);
   const analysis = new AnalysisService(prisma, github);
   const vercel = new VercelServiceClient();
   const render = new RenderServiceClient();
-  const providerDeployments = new ProviderDeploymentsService(
+  const neon = new NeonServiceClient();
+  const sink = new ProviderLogSink(logs, (id) =>
+    prisma.deployment.findUnique({ where: { id }, select: { componentId: true, provider: true } }),
+  );
+  const providerDeployments = new ProviderDeploymentsService(prisma, github, events, { vercel, render }, sink, neon, envVars);
+  const components: ComponentsService = new ComponentsService(
     prisma,
     github,
+    analysis,
     events,
-    { vercel, render },
-    new ProviderLogSink(logs),
+    async (userId, provider) => {
+      const client = provider === "vercel" ? vercel : provider === "render" ? render : provider === "neon" ? neon : null;
+      if (!client) return "missing";
+      try {
+        return (await client.getCredential(userId)).state;
+      } catch {
+        return "unavailable";
+      }
+    },
+    (projectId) => envVars.keysFor(projectId),
   );
-  const components = new ComponentsService(prisma, github, analysis, events, async (userId, provider) => {
-    const client = provider === "vercel" ? vercel : provider === "render" ? render : null;
-    if (!client) return "missing";
-    try {
-      return (await client.getCredential(userId)).state;
-    } catch {
-      return "unavailable";
-    }
-  });
-  const executor = new DeployExecutor(prisma, github, docker, logs, events);
+  const releases = new ReleasesService(prisma, github, events, components, providerDeployments, sink);
+  const runtimeLogs = new RuntimeLogsService(prisma, logsClient, envVars, neon);
+  const executor = new DeployExecutor(prisma, github, docker, logs, events, envVars);
 
   // The queue is constructed before the executor exists, so the runner is
   // attached here rather than in its constructor.
@@ -94,13 +120,18 @@ function build(): Runtime {
     docker,
     queue,
     logs,
+    logsClient,
+    runtimeLogs,
     deployments,
     projects,
     analysis,
     components,
+    envVars,
     vercel,
     render,
+    neon,
     providerDeployments,
+    releases,
     deliveries,
     executor,
   };
@@ -137,6 +168,11 @@ export function ensureBootstrapped(): Promise<void> {
 }
 
 async function bootstrap(rt: Runtime): Promise<void> {
+  // Phase 9: the old per-project env JSON becomes sealed shared rows, before
+  // any queued Docker build below reads them.
+  const moved = await rt.envVars.migrateLegacy();
+  if (moved > 0) console.log(`[bootstrap] Moved the env vars of ${moved} project(s) into EnvVar.`);
+
   // Anything left 'running' is a lie from a previous process: nothing is
   // executing it now, and without this it would sit there for ever.
   //
@@ -176,9 +212,15 @@ async function bootstrap(rt: Runtime): Promise<void> {
 
   // Not awaited: a slow or stopped integration service must not hold up every
   // request that waits on bootstrap.
+  // Releases resume after the reconcile, so they see their deployments' real state.
   void rt.providerDeployments
     .reconcile()
-    .catch((error: Error) => console.warn(`[bootstrap] Provider reconcile failed: ${error.message}`));
+    .catch((error: Error) => console.warn(`[bootstrap] Provider reconcile failed: ${error.message}`))
+    .then(() => rt.releases.resumeAll())
+    .then((count) => {
+      if (count) console.log(`[bootstrap] Resumed ${count} running release(s).`);
+    })
+    .catch((error: Error) => console.warn(`[bootstrap] Release resume failed: ${error.message}`));
 }
 
 const globalForHooks = globalThis as unknown as { __orbitopsShutdownHooked?: boolean };

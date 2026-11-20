@@ -40,6 +40,8 @@ export function toLogLine(entry: RenderLogEntry): LogLine | null {
     at: Number.isFinite(at) ? at : 0,
     stream,
     text,
+    // Phase 12: during a deploy Render sends the build and the service's first app output.
+    phase: type === "app" ? "runtime" : "build",
   };
 }
 

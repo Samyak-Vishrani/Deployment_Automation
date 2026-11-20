@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState, type FormEvent } from "react";
+import { type FormEvent, useMemo, useRef, useState } from "react";
+import { parseDotenv } from "@/lib/deploy/env-file";
 import { RepositoryPicker } from "@/components/RepositoryPicker";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -14,18 +15,9 @@ import type { BranchList, GithubRepository } from "@/lib/deploy/types";
 const GITHUB_REPO_URL =
   /^(https?:\/\/)?(www\.)?github\.com\/[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+(\.git)?\/?$/;
 
-/** "KEY=value" per line -> object. Blank lines and #comments ignored. */
+/** A .env text -> object (quotes, `export`, comments: see lib/deploy/env-file). */
 function parseEnv(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq > 0) {
-      out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-    }
-  }
-  return out;
+  return Object.fromEntries(parseDotenv(text).entries.map((e) => [e.key, e.value]));
 }
 
 const lines = (text: string) =>
@@ -53,6 +45,7 @@ export default function NewDeployProjectPage() {
   const [dockerfilePath, setDockerfilePath] = useState("Dockerfile");
   const [watchPaths, setWatchPaths] = useState("");
   const [envText, setEnvText] = useState("");
+  const envSkipped = useMemo(() => (envText.trim() ? parseDotenv(envText).skipped : []), [envText]);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -260,17 +253,23 @@ export default function NewDeployProjectPage() {
           </label>
 
           <label className="field-label field-full" htmlFor="env">
-            Environment variables
+            Shared env vars (stored encrypted, as secrets)
             <textarea
               id="env"
               rows={4}
               value={envText}
               onChange={(e) => setEnvText(e.target.value)}
               placeholder={"NODE_ENV=production\nGREETING=hello"}
+              spellCheck={false}
+              autoComplete="off"
             />
             <p className="field-hint">
-              KEY=value per line. Passed to the running container, never used as Docker build
-              arguments - those are baked into the image history.
+              Paste a .env. These go to every backend and to the Docker container (never as Docker
+              build arguments, which are baked into the image history). Give a component its own
+              variables later, under Configure → Environment.
+              {envSkipped.length
+                ? ` Skipped: ${envSkipped.map((s) => `line ${s.line} (${s.reason})`).join("; ")}.`
+                : ""}
             </p>
           </label>
         </div>

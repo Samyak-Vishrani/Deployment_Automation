@@ -1,17 +1,17 @@
 import type { RenderDeployment, RenderService } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
-import { redact } from "../common/redact";
+import { redact } from "@orbitops/integration-common/redact";
 import type { Db } from "../db";
-import { abortableSleep } from "../http/provider-fetch";
-import { ProviderError } from "../http/provider-error";
+import { abortableSleep } from "@orbitops/integration-common/provider-fetch";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import type { CredentialsService } from "../credentials/credentials.service";
-import type { EventOutbox } from "../callbacks/outbox";
+import type { EventOutbox } from "@orbitops/integration-common/outbox";
 import { describeFailure, hintFor } from "../render/error-hints";
 import type { RenderContext } from "../render/render-http";
 import type { KnownService, RenderProvider } from "../render/render.provider";
 import { isTerminal, type NormalisedStatus, type ProviderEvent, type StoredDeployInput } from "../types";
-import type { AbortReason, DeployJob } from "./deploy-queue";
-import type { EnvVault } from "./env-vault";
+import type { AbortReason, DeployJob } from "@orbitops/integration-common/deploy-queue";
+import type { EnvVault } from "@orbitops/integration-common/env-vault";
 
 export interface RunnerOptions {
   pollIntervalMs: number;
@@ -86,7 +86,7 @@ export class DeployRunner {
 
     const emit = (event: ProviderEvent) => this.outbox.push(row.deploymentId, event);
     const log: Log = (text, stream = "info") =>
-      emit({ type: "logs", lines: [{ at: Date.now(), stream, text: redact(text, secrets) }] });
+      emit({ type: "logs", lines: [{ at: Date.now(), stream, text: redact(text, secrets), phase: "deploy", origin: "orbitops" }] });
 
     let ctx: RenderContext | undefined;
     let serviceId: string | null = null;
@@ -224,7 +224,13 @@ export class DeployRunner {
         if (fresh.length > 0) {
           emit({
             type: "logs",
-            lines: fresh.map((line) => ({ at: line.at, stream: line.stream, text: redact(line.text, secrets) })),
+            lines: fresh.map((line) => ({
+              at: line.at,
+              stream: line.stream,
+              text: redact(line.text, secrets),
+              phase: line.phase ?? "build",
+              origin: "provider",
+            })),
           });
         }
         if (next && next !== cursor) {

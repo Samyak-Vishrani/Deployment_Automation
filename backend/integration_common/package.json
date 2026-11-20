@@ -1,0 +1,36 @@
+{
+  "name": "@orbitops/integration-common",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plumbing shared by the OrbitOps provider integration services (vercel_integration, render_integration, neondb_integration). TypeScript source only, no build step: each service runs it through tsx.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    "./callback-client": "./src/callback-client.ts",
+    "./config-helpers": "./src/config-helpers.ts",
+    "./contract": "./src/contract.ts",
+    "./deploy-queue": "./src/deploy-queue.ts",
+    "./env-hash": "./src/env-hash.ts",
+    "./env-vault": "./src/env-vault.ts",
+    "./internal-auth": "./src/internal-auth.ts",
+    "./ndjson": "./src/ndjson.ts",
+    "./outbox": "./src/outbox.ts",
+    "./provider-error": "./src/provider-error.ts",
+    "./provider-fetch": "./src/provider-fetch.ts",
+    "./redact": "./src/redact.ts",
+    "./secret-box": "./src/secret-box.ts",
+    "./stream-limiter": "./src/stream-limiter.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

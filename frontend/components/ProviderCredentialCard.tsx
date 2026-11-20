@@ -10,6 +10,8 @@ import {
   setProviderTeam,
 } from "@/lib/deploy/client";
 import {
+  NEON_PG_VERSIONS,
+  NEON_REGIONS,
   RENDER_PLANS,
   RENDER_REGIONS,
   type ConnectableProvider,
@@ -52,10 +54,36 @@ const CONFIG: Record<
     scopeLabel: "Workspace",
     kept: "Services already created on Render are kept there",
   },
+  neon: {
+    title: "Neon",
+    purpose:
+      "Postgres for the database component. Paste an API key to connect; each project's database is created " +
+      "in your Neon account, and the backend gets its DATABASE_URL automatically.",
+    secretLabel: "API key",
+    secretNoun: "API key",
+    createUrl: "https://console.neon.tech/app/settings/api-keys",
+    createLabel: "Create an API key on Neon",
+    scopeLabel: "Organization",
+    kept: "Databases already created on Neon are kept there, with their data",
+  },
+};
+
+/** What each provider hosts, for the connected line. */
+const HOSTS: Record<ConnectableProvider, string> = {
+  vercel: "Deploys frontends",
+  render: "Deploys backends",
+  neon: "Provisions databases",
+};
+
+/** What a provider creates in its scope, for the scope hint. */
+const RESOURCES: Record<ConnectableProvider, string> = {
+  vercel: "Vercel projects",
+  render: "Render services",
+  neon: "Neon projects",
 };
 
 /**
- * Connect / reconnect / disconnect a provider account (Vercel or Render).
+ * Connect / reconnect / disconnect a provider account (Vercel, Render or Neon).
  *
  * The token or key goes to the backend once, over the session-authenticated
  * API, and is never shown again: the backend only ever returns the account
@@ -106,7 +134,9 @@ export function ProviderCredentialCard({
     await run(() =>
       provider === "vercel"
         ? setProviderTeam("vercel", id === "" ? null : id)
-        : setProviderPreferences("render", { ownerId: id }),
+        : provider === "neon"
+          ? setProviderPreferences("neon", { orgId: id === "" ? null : id })
+          : setProviderPreferences("render", { ownerId: id }),
     );
   }
 
@@ -125,21 +155,35 @@ export function ProviderCredentialCard({
     });
   }
 
-  // Vercel scopes are teams (plus the personal scope); Render scopes are workspaces.
+  // Vercel scopes are teams (plus the personal scope); Render scopes are workspaces;
+  // Neon scopes are organizations (plus the key's default).
   const scopes =
     provider === "vercel"
       ? [{ id: "", label: "Personal scope" }, ...(credential.teams ?? []).map((t) => ({ id: t.id, label: `${t.name} (${t.slug})` }))]
-      : (credential.owners ?? []).map((o) => ({ id: o.id, label: `${o.name}${o.type === "team" ? " (team)" : ""}` }));
-  const scopeValue = provider === "vercel" ? (credential.teamId ?? "") : (credential.ownerId ?? "");
+      : provider === "neon"
+        ? [{ id: "", label: "The key's default" }, ...(credential.orgs ?? []).map((o) => ({ id: o.id, label: o.name }))]
+        : (credential.owners ?? []).map((o) => ({ id: o.id, label: `${o.name}${o.type === "team" ? " (team)" : ""}` }));
+  const scopeValue =
+    provider === "vercel" ? (credential.teamId ?? "") : provider === "neon" ? (credential.orgId ?? "") : (credential.ownerId ?? "");
   const scopeName =
     provider === "vercel"
       ? credential.teamSlug
         ? ` in team ${credential.teamSlug}`
         : " (personal scope)"
-      : credential.ownerName
-        ? ` in workspace ${credential.ownerName}`
-        : "";
-  const showScopes = connected && (provider === "render" ? scopes.length > 0 : (credential.teams?.length ?? 0) > 0);
+      : provider === "neon"
+        ? credential.orgName
+          ? ` in organization ${credential.orgName}`
+          : ""
+        : credential.ownerName
+          ? ` in workspace ${credential.ownerName}`
+          : "";
+  const showScopes =
+    connected &&
+    (provider === "render"
+      ? scopes.length > 0
+      : provider === "neon"
+        ? (credential.orgs?.length ?? 0) > 0
+        : (credential.teams?.length ?? 0) > 0);
 
   return (
     <div className="setting-line" style={{ flexDirection: "column", alignItems: "stretch", gap: 12 }}>
@@ -147,9 +191,7 @@ export function ProviderCredentialCard({
         <span className="setting-line-copy">
           <strong>{config.title}</strong>
           <small>
-            {connected
-              ? `Deploys ${provider === "vercel" ? "frontends" : "backends"} as ${credential.accountName}${scopeName}.`
-              : config.purpose}
+            {connected ? `${HOSTS[provider]} as ${credential.accountName}${scopeName}.` : config.purpose}
           </small>
         </span>
         {credential.state === "connected" ? (
@@ -189,8 +231,8 @@ export function ProviderCredentialCard({
           </select>
           <p className="field-hint">
             {credential.scopeLocked
-              ? `Fixed: ${provider === "vercel" ? "Vercel projects" : "Render services"} already exist here.`
-              : `New ${provider === "vercel" ? "Vercel projects" : "Render services"} are created here.`}
+              ? `Fixed: ${RESOURCES[provider]} already exist here.`
+              : `New ${RESOURCES[provider]} are created here.`}
           </p>
         </label>
       ) : null}
@@ -230,6 +272,46 @@ export function ProviderCredentialCard({
           <p className="field-hint field-full">
             Used when a new Render service is created; Render fixes both once a service exists. Free instances sleep
             after 15 minutes without traffic and take about a minute to wake.
+          </p>
+        </div>
+      ) : null}
+
+      {connected && provider === "neon" ? (
+        <div className="form-grid">
+          <label className="field-label" htmlFor="neon-region">
+            Region
+            <select
+              id="neon-region"
+              value={credential.regionId ?? "aws-us-west-2"}
+              disabled={busy}
+              onChange={(e) => void run(() => setProviderPreferences("neon", { regionId: e.target.value }))}
+            >
+              {NEON_REGIONS.map((region) => (
+                <option key={region.id} value={region.id}>
+                  {region.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-label" htmlFor="neon-pg">
+            Postgres version
+            <select
+              id="neon-pg"
+              value={String(credential.pgVersion ?? 17)}
+              disabled={busy}
+              onChange={(e) => void run(() => setProviderPreferences("neon", { pgVersion: Number(e.target.value) }))}
+            >
+              {NEON_PG_VERSIONS.map((version) => (
+                <option key={version} value={String(version)}>
+                  Postgres {version}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="field-hint field-full">
+            Used when a new Neon project is created; Neon fixes both once it exists. Keep the region close to your
+            Render backend (Oregon by default). Free projects pause when idle; the first query after a pause takes a
+            moment.
           </p>
         </div>
       ) : null}

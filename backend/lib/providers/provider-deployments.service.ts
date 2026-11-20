@@ -13,11 +13,16 @@ import { badRequest, HttpError, notFound } from "@/lib/api/http-error";
 import { PROVIDER_LABEL } from "@/lib/components/provider-rules";
 import { changedFiles, commitInfo, screenPush, shouldDeploy } from "@/lib/deployments/push-filter";
 import type { PushPayload } from "@/lib/deployments/push-payload";
+import type { EnvVarsService, ResolvedEnv } from "@/lib/env/env-vars.service";
+import type { LogSource } from "@/lib/logs/log-types";
+import { DATABASE_ENV_KEYS } from "@/lib/env/system-env";
 import type { EventsService } from "@/lib/events/events.service";
 import type { GithubAppService } from "@/lib/github/github-app.service";
 import type { ParsedRepo } from "@/lib/github/repo-url";
 import type { ProviderLogSink } from "./provider-log-sink";
+import { apiUrlKey } from "./api-url-env";
 import { isServiceUnavailable } from "./integration-service.client";
+import type { NeonServiceClient } from "./neon-service.client";
 import type { RenderServiceClient } from "./render-service.client";
 import type { VercelServiceClient } from "./vercel-service.client";
 import type { EventBatch, ProviderEvent, ProviderStatus } from "./vercel-service.types";
@@ -29,7 +34,22 @@ export interface DeployComponentOptions {
   commitAuthor?: string | null;
   /** Push dedupe key; unique per (project, deliveryId). */
   deliveryId?: string | null;
+  /** The "Deploy all" this deployment belongs to (Phase 8). */
+  releaseId?: string | null;
 }
+
+/** What the backend asks of the neondb_integration service. */
+export type NeonClient = Pick<NeonServiceClient, "getCredential" | "ensureDatabase" | "getDatabase" | "getConnection">;
+
+/** The env vars a Neon database gives its project's backend (moved to lib/env/system-env). */
+export { DATABASE_ENV_KEYS };
+
+/** What a deploy needs from the env vars (Phase 9). */
+export type EnvResolver = Pick<EnvVarsService, "resolve">;
+
+const noEnv: EnvResolver = { resolve: async () => ({ vars: [], secrets: [], revision: 0 }) };
+
+type EnvVar = { key: string; value: string };
 
 const TERMINAL: ReadonlySet<DeploymentStatus> = new Set(["success", "failed", "cancelled"]);
 
@@ -88,6 +108,8 @@ export function lifecycleStatus(status: ProviderStatus): DeploymentStatus {
 export class ProviderDeploymentsService {
   /** Serialises event batches per deployment, so a redelivery never interleaves. */
   private readonly locks = new Map<string, Promise<unknown>>();
+  /** Told about every deployment that reaches a final state (the release orchestrator listens). */
+  private finishedListener?: (deployment: Deployment) => void;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -98,7 +120,30 @@ export class ProviderDeploymentsService {
     private readonly events: EventsService,
     private readonly clients: ProviderClients,
     private readonly sink: ProviderLogSink,
+    /** Neon provisions synchronously, so it is not one of the event-driven `clients`. */
+    private readonly neon: NeonClient,
+    /** The component's env vars, sealed in EnvVar (Phase 9). */
+    private readonly envVars: EnvResolver = noEnv,
   ) {}
+
+  /**
+   * Registers the one listener for finished deployments. It is called without
+   * being awaited, outside any lock, so it may start further deployments.
+   */
+  onDeploymentFinished(listener: (deployment: Deployment) => void): void {
+    this.finishedListener = listener;
+  }
+
+  private notifyFinished(deployment: Deployment): void {
+    if (!this.finishedListener) return;
+    queueMicrotask(() => {
+      try {
+        this.finishedListener?.(deployment);
+      } catch (error) {
+        console.error(`[provider] Finished-deployment listener failed: ${(error as Error).message}`);
+      }
+    });
+  }
 
   // -------------------------------------------------------------- deploy --
 
@@ -120,8 +165,11 @@ export class ProviderDeploymentsService {
       throw badRequest(`${component.name} deploys with local Docker; use "Deploy now" on the project page.`);
     }
     const provider = component.provider;
+    if (provider === "neon") {
+      return (await this.provisionDatabase(userId, project, component, options)).deployment;
+    }
     if (!isIntegrated(provider)) {
-      throw badRequest(`Deploying to ${PROVIDER_LABEL[provider]} arrives in a later phase (Neon: Phase 8).`);
+      throw badRequest(`Deploying to ${PROVIDER_LABEL[provider]} is not supported.`);
     }
     const label = PROVIDER_LABEL[provider];
 
@@ -140,6 +188,8 @@ export class ProviderDeploymentsService {
 
     const installationId = project.installationId ?? (await this.github.resolveInstallationId(repo));
     const commitSha = options.commitSha ?? (await this.github.getBranchHeadSha(repo, branch, installationId));
+    // Read before the row exists, so the row records the revision it is sent with.
+    const env = await this.envVars.resolve(projectId, component);
 
     let deployment: Deployment;
     try {
@@ -156,6 +206,8 @@ export class ProviderDeploymentsService {
           commitMessage: options.commitMessage ?? `Deploy ${component.name} to ${label}`,
           commitAuthor: options.commitAuthor ?? null,
           deliveryId: options.deliveryId ?? null,
+          releaseId: options.releaseId ?? null,
+          envRevision: env.revision,
         },
       });
     } catch (error) {
@@ -165,6 +217,7 @@ export class ProviderDeploymentsService {
       throw error;
     }
     this.events.deploymentChanged(projectId, deployment.id, "queued");
+    await this.sink.addSecrets(projectId, deployment.id, env.secrets);
     await this.sink.section(
       projectId,
       deployment.id,
@@ -176,6 +229,9 @@ export class ProviderDeploymentsService {
         const repoId = project.repoId ?? (await this.github.getRepoMetadata(repo)).id;
         // Only Vercel can need the source (its upload fallback); Render reads GitHub itself.
         const githubToken = await this.github.getInstallationToken(installationId);
+        const userKeys = new Set(env.vars.map((v) => v.key));
+        const publicEnvVars = await this.vercelPublicEnv(project, component, deployment.id, userKeys);
+        await this.logEnvKeys(project.id, deployment.id, env);
         await this.clients.vercel.startDeployment({
           deploymentId: deployment.id,
           userId,
@@ -192,8 +248,13 @@ export class ProviderDeploymentsService {
           repo: { fullName: repo.fullName, repoId, branch },
           commitSha,
           githubToken,
+          ...(publicEnvVars ? { publicEnvVars } : {}),
+          // The frontend's own vars (Phase 9). Values only ever travel in this body;
+          // the service holds them in memory for the run, never at rest.
+          envVars: env.vars,
         });
       } else {
+        const envVars = await this.renderEnv(userId, project, deployment, env);
         await this.clients.render.startDeployment({
           deploymentId: deployment.id,
           userId,
@@ -210,8 +271,9 @@ export class ProviderDeploymentsService {
           },
           repo: { fullName: repo.fullName, branch },
           commitSha,
-          // Phase 7 sends the project's env vars; Phase 9 swaps in encrypted per-component vars.
-          envVars: projectEnvVars(project),
+          // Shared + the backend's own (Phase 9), plus the Neon database's (Phase 8).
+          // Values only ever travel in this request body.
+          envVars,
         });
       }
     } catch (error) {
@@ -315,10 +377,21 @@ export class ProviderDeploymentsService {
     const { id, projectId } = deployment;
     switch (event.type) {
       case "logs":
+        // Phase 12: a line the integration service wrote itself ("==> Preparing…")
+        // is OrbitOps'; one it pulled from the provider is the provider's.
         await this.sink.write(
           projectId,
           id,
-          event.lines.map((line) => line.text),
+          event.lines.map((line) => {
+            const ours = line.origin === "orbitops";
+            return {
+              text: line.text,
+              at: line.at,
+              stream: line.stream,
+              source: ours ? ("orbitops" as const) : logSourceOf(deployment.provider),
+              phase: line.phase ?? (ours ? ("deploy" as const) : ("build" as const)),
+            };
+          }),
         );
         return deployment;
 
@@ -387,6 +460,7 @@ export class ProviderDeploymentsService {
           await this.setComponent(component, next);
         }
         this.events.deploymentChanged(projectId, id, status);
+        this.notifyFinished(updated);
         return updated;
       }
     }
@@ -406,6 +480,10 @@ export class ProviderDeploymentsService {
     const unreachable = new Set<IntegratedProvider>();
     for (const row of rows) {
       const provider = row.provider;
+      if (provider === "neon") {
+        await this.reconcileNeon(row).catch((error: Error) => console.warn(`[reconcile] ${row.id}: ${error.message}`));
+        continue;
+      }
       if (!isIntegrated(provider) || unreachable.has(provider)) continue;
       let view: DeploymentStateView;
       try {
@@ -438,6 +516,249 @@ export class ProviderDeploymentsService {
         );
       }
     }
+  }
+
+  /**
+   * A provisioning that was running in this process when it stopped. The
+   * Neon service finished it or not; either way the row is closed, because
+   * nothing here is waiting on it any more. Ensuring is idempotent, so a
+   * redeploy simply carries on.
+   */
+  private async reconcileNeon(row: Deployment): Promise<void> {
+    const component = row.componentId ? await this.prisma.component.findUnique({ where: { id: row.componentId } }) : null;
+    const project = await this.prisma.project.findUnique({ where: { id: row.projectId } });
+    if (!component || !project) {
+      await this.finishLocally(row, "failed", "Provisioning was interrupted by a backend restart.");
+      return;
+    }
+    let ready = false;
+    let consoleUrl: string | null = null;
+    try {
+      const db = await this.neon.getDatabase(project.userId, component.id);
+      ready = db.state === "ready";
+      consoleUrl = db.consoleUrl;
+      if (ready) await this.setComponent(component, { providerResourceId: db.neonProjectId, url: db.consoleUrl, status: "live" });
+    } catch (error) {
+      if (isServiceUnavailable(error)) throw error; // try again on the next start
+    }
+    if (ready) {
+      await this.sink.write(row.projectId, row.id, ["The Neon database finished provisioning while the backend restarted."]);
+      const logTail = await this.sink.close(row.projectId, row.id, "success");
+      const updated = await this.prisma.deployment.update({
+        where: { id: row.id },
+        data: { status: "success", providerStatus: "live", url: consoleUrl, finishedAt: new Date(), logTail },
+      });
+      this.events.deploymentChanged(row.projectId, row.id, "success");
+      this.notifyFinished(updated);
+      return;
+    }
+    if (component.status === "deploying") await this.setComponent(component, { status: "failed" });
+    await this.finishLocally(row, "failed", "Provisioning was interrupted by a backend restart. Deploy again; it carries on.");
+  }
+
+  // ---------------------------------------------------------- neon (phase 8) --
+
+  /**
+   * Provisions the project's database component on Neon: a Deployment row
+   * (provider "neon") with its own log, so it shows in history and in a
+   * release like any other step.
+   *
+   * Returns the row at once; `done` settles with the finished row. The
+   * provisioning itself is synchronous in the Neon service (seconds), and runs
+   * here in the background, the way the other providers' deploys do.
+   */
+  async provisionDatabase(
+    userId: string,
+    project: Project,
+    component: Component,
+    options: DeployComponentOptions,
+  ): Promise<{ deployment: Deployment; done: Promise<Deployment> }> {
+    const credential = await this.neon.getCredential(userId);
+    if (credential.state === "missing") {
+      throw new HttpError("Connect Neon in Settings first.", 412, "neon_not_connected");
+    }
+    if (credential.state === "invalid") {
+      throw new HttpError("Neon rejected the saved API key. Reconnect Neon in Settings.", 412, "neon_key_invalid");
+    }
+
+    const branch = project.branch ?? project.defaultBranch ?? "main";
+    const deployment = await this.prisma.deployment.create({
+      data: {
+        projectId: project.id,
+        componentId: component.id,
+        provider: "neon",
+        status: "running",
+        providerStatus: "deploying",
+        trigger: options.trigger,
+        branch,
+        commitSha: options.commitSha ?? null,
+        commitMessage: options.commitMessage ?? `Provision ${component.name} on Neon`,
+        commitAuthor: options.commitAuthor ?? null,
+        releaseId: options.releaseId ?? null,
+        startedAt: new Date(),
+      },
+    });
+    this.events.deploymentChanged(project.id, deployment.id, "running");
+    await this.setComponent(component, { status: "deploying" });
+    await this.sink.section(project.id, deployment.id, `Provisioning Neon database ${component.name} for ${project.name}`, {
+      source: "neon",
+    });
+
+    const done = this.runProvisioning(userId, project, component, deployment);
+    // The caller may not wait; a failure is already recorded on the row.
+    done.catch(() => undefined);
+    return { deployment, done };
+  }
+
+  private async runProvisioning(
+    userId: string,
+    project: Project,
+    component: Component,
+    deployment: Deployment,
+  ): Promise<Deployment> {
+    try {
+      const db = await this.neon.ensureDatabase({
+        userId,
+        componentId: component.id,
+        projectName: project.repo ?? project.name,
+        componentName: component.name,
+      });
+      const lines = [
+        ...(db.warning ? [`Warning: ${db.warning}`] : []),
+        db.created
+          ? `Created Neon project ${db.name} (${db.neonProjectId}) in ${db.regionId}, Postgres ${db.pgVersion}.`
+          : `Neon database ${db.name} (${db.neonProjectId}) is ready (existing project).`,
+        `Database "${db.databaseName}", role "${db.roleName}"${db.host ? `, host ${db.host}` : ""}.`,
+        `The backend gets ${DATABASE_ENV_KEYS.join(" (pooled) and ")} (direct) on its next deploy.`,
+        `Neon console: ${db.consoleUrl}`,
+      ];
+      await this.sink.write(project.id, deployment.id, lines, { source: "neon", phase: "deploy" });
+      await this.setComponent(component, { providerResourceId: db.neonProjectId, url: db.consoleUrl, status: "live" });
+      await this.sink.section(project.id, deployment.id, `Database ready: ${db.consoleUrl}`, { source: "neon" });
+      const logTail = await this.sink.close(project.id, deployment.id, "success");
+      const updated = await this.prisma.deployment.update({
+        where: { id: deployment.id },
+        data: {
+          status: "success",
+          providerStatus: "live",
+          url: db.consoleUrl,
+          inspectorUrl: db.consoleUrl,
+          finishedAt: new Date(),
+          logTail,
+        },
+      });
+      this.events.deploymentChanged(project.id, deployment.id, "success");
+      this.notifyFinished(updated);
+      return updated;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not provision the database.";
+      await this.setComponent(component, { status: "failed" });
+      await this.finishLocally(deployment, "failed", `Provisioning failed: ${message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * The env vars a Render backend is deployed with: the project's own, plus,
+   * when the project has a Neon database, DATABASE_URL (pooled) and
+   * DATABASE_URL_UNPOOLED (direct), fetched fresh and never stored or logged.
+   * A database not provisioned yet is provisioned first, so a lone backend
+   * deploy works too.
+   */
+  private async renderEnv(userId: string, project: Project, deployment: Deployment, resolved: ResolvedEnv): Promise<EnvVar[]> {
+    await this.logEnvKeys(project.id, deployment.id, resolved);
+    const env: EnvVar[] = resolved.vars.map(({ key, value }) => ({ key, value }));
+    const database = await this.prisma.component.findFirst({
+      where: { projectId: project.id, kind: "database", provider: "neon" },
+      orderBy: { createdAt: "asc" },
+    });
+    if (!database) return env;
+
+    if (!database.providerResourceId || database.status !== "live") {
+      await this.sink.write(project.id, deployment.id, [
+        `The ${database.name} database is not provisioned yet; provisioning it on Neon first.`,
+      ]);
+      const { done } = await this.provisionDatabase(userId, project, database, {
+        trigger: deployment.trigger,
+        commitSha: deployment.commitSha,
+        releaseId: deployment.releaseId,
+      });
+      try {
+        await done;
+      } catch (error) {
+        throw new HttpError(
+          `The ${database.name} database could not be provisioned on Neon: ${(error as Error).message}`,
+          502,
+          "neon_provision_failed",
+        );
+      }
+    }
+
+    const connection = await this.neon.getConnection(userId, database.id);
+    await this.sink.addSecrets(project.id, deployment.id, [connection.pooledUri, connection.directUri]);
+    const system: EnvVar[] = [
+      { key: "DATABASE_URL", value: connection.pooledUri },
+      { key: "DATABASE_URL_UNPOOLED", value: connection.directUri },
+    ];
+    const overridden = env.filter((v) => (DATABASE_ENV_KEYS as readonly string[]).includes(v.key)).map((v) => v.key);
+    await this.sink.write(project.id, deployment.id, [
+      `${DATABASE_ENV_KEYS.join(" and ")} come from the Neon database ${database.name}.`,
+      ...(overridden.length > 0
+        ? [`The project's own ${overridden.join(" and ")} ${overridden.length === 1 ? "is" : "are"} not used.`]
+        : []),
+    ]);
+    return [...env.filter((v) => !(DATABASE_ENV_KEYS as readonly string[]).includes(v.key)), ...system];
+  }
+
+  /**
+   * The public env vars a Vercel frontend is built with: its backend's URL,
+   * under the key its framework exposes to browser code (NEXT_PUBLIC_API_URL
+   * for Next.js). Only with exactly one backend:
+   *
+   * - no backend at all → [] (any URL set before is removed);
+   * - one backend with a URL → [{ key, url }];
+   * - one backend not deployed yet, or several → undefined: the project's env
+   *   is left as it is, and the log says why.
+   */
+  private async vercelPublicEnv(
+    project: Project,
+    frontend: Component,
+    deploymentId: string,
+    userKeys: ReadonlySet<string> = new Set(),
+  ): Promise<EnvVar[] | undefined> {
+    const backends = await this.prisma.component.findMany({
+      where: { projectId: project.id, kind: "backend" },
+      orderBy: { createdAt: "asc" },
+    });
+    const key = apiUrlKey(frontend.framework, frontend.buildCmd);
+    if (backends.length === 0) return [];
+    // The user's own value wins (Phase 9): how a project with several backends sets it.
+    if (userKeys.has(key)) {
+      await this.sink.write(project.id, deploymentId, [`${key} comes from ${frontend.name}'s own env vars, so the backend's URL is not set.`]);
+      return [];
+    }
+    if (backends.length > 1) {
+      await this.sink.write(project.id, deploymentId, [
+        `${backends.length} backends, so ${key} is not set automatically. Set it yourself for now.`,
+      ]);
+      return undefined;
+    }
+    const url = backends[0].url;
+    if (!url) {
+      await this.sink.write(project.id, deploymentId, [
+        `The backend ${backends[0].name} has no URL yet, so ${key} is not set. Deploy it first, or use Deploy all.`,
+      ]);
+      return undefined;
+    }
+    await this.sink.write(project.id, deploymentId, [`${key}=${url} (the backend ${backends[0].name}).`]);
+    return [{ key, value: url }];
+  }
+
+  /** One line naming the user env vars a deploy is sent with: keys only. */
+  private async logEnvKeys(projectId: string, deploymentId: string, env: ResolvedEnv): Promise<void> {
+    if (env.vars.length === 0) return;
+    const keys = env.vars.map((v) => (v.secret ? `${v.key} (secret)` : v.key));
+    await this.sink.write(projectId, deploymentId, [`Environment: ${keys.join(", ")}.`]);
   }
 
   // ---------------------------------------------------------------- push --
@@ -486,11 +807,12 @@ export class ProviderDeploymentsService {
   private async finishLocally(deployment: Deployment, status: "failed" | "cancelled", message: string): Promise<void> {
     await this.sink.write(deployment.projectId, deployment.id, [message]);
     const logTail = await this.sink.close(deployment.projectId, deployment.id, status);
-    await this.prisma.deployment.update({
+    const updated = await this.prisma.deployment.update({
       where: { id: deployment.id },
       data: { status, providerStatus: status, errorMessage: message, finishedAt: new Date(), logTail },
     });
     this.events.deploymentChanged(deployment.projectId, deployment.id, status);
+    this.notifyFinished(updated);
   }
 
   private async setComponent(
@@ -503,14 +825,6 @@ export class ProviderDeploymentsService {
   }
 }
 
-/** The project's env vars as a list. Values travel only to the integration service, never to logs. */
-export function projectEnvVars(project: Pick<Project, "envVars">): Array<{ key: string; value: string }> {
-  const raw = (project.envVars ?? {}) as Record<string, unknown>;
-  return Object.entries(raw)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0]))
-    .map(([key, value]) => ({ key, value }));
-}
-
 function repoOf(project: Project): ParsedRepo {
   const fullName = project.repoFullName ?? project.githubFullName;
   const [owner, repo] = project.owner && project.repo ? [project.owner, project.repo] : (fullName ?? "").split("/");
@@ -518,4 +832,9 @@ function repoOf(project: Project): ParsedRepo {
     throw badRequest("No GitHub repository connected to this project.");
   }
   return { owner, repo, fullName };
+}
+
+/** The log source a provider's own output is filed under. */
+function logSourceOf(provider: ProviderId): LogSource {
+  return provider === "vercel" || provider === "render" || provider === "neon" ? provider : provider === "local_docker" ? "docker" : "orbitops";
 }

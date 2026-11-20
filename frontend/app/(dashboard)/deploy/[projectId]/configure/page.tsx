@@ -3,26 +3,32 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { EnvEditor } from "@/components/EnvEditor";
 import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
 import {
+  deployAll,
   deployComponent,
   getComponentProposal,
   getDeployProject,
+  getEnvironment,
   getPreflight,
   listComponents,
   saveComponents,
 } from "@/lib/deploy/client";
 import {
   CAN_DEPLOY,
+  DATABASE_ENV_KEYS,
   PROVIDER_FOR_KIND,
   PROVIDER_LABEL,
+  type ComponentEnvView,
   type ComponentFields,
   type ComponentKind,
   type ComponentProposal,
   type DeployComponent,
   type DeployProject,
+  type EnvironmentView,
   type PreflightCheck,
   type PreflightResult,
   type ProposedComponent,
@@ -154,6 +160,15 @@ export default function ConfigureComponentsPage() {
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [env, setEnv] = useState<EnvironmentView | null>(null);
+
+  const loadEnv = useCallback(async () => {
+    try {
+      setEnv(await getEnvironment(projectId));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [projectId]);
 
   const runPreflight = useCallback(async () => {
     setChecking(true);
@@ -165,6 +180,15 @@ export default function ConfigureComponentsPage() {
       setChecking(false);
     }
   }, [projectId]);
+
+  /** A saved env change can change pre-flight (a .env.example key now has a value). */
+  const onEnvSaved = useCallback(
+    (view: EnvironmentView) => {
+      setEnv(view);
+      void runPreflight();
+    },
+    [runPreflight],
+  );
 
   const loadProposal = useCallback(async () => {
     setProposing(true);
@@ -192,7 +216,7 @@ export default function ConfigureComponentsPage() {
       if (saved.length > 0) {
         setDrafts(saved.map(toDraft));
         setLoading(false);
-        await runPreflight();
+        await Promise.all([runPreflight(), loadEnv()]);
       } else {
         setLoading(false);
         await loadProposal();
@@ -201,7 +225,7 @@ export default function ConfigureComponentsPage() {
       setError((e as Error).message);
       setLoading(false);
     }
-  }, [projectId, runPreflight, loadProposal]);
+  }, [projectId, runPreflight, loadProposal, loadEnv]);
 
   useEffect(() => {
     void Promise.resolve().then(load);
@@ -257,7 +281,7 @@ export default function ConfigureComponentsPage() {
       setDrafts(saved.map(toDraft));
       setProposal(null);
       setDirty(false);
-      await runPreflight();
+      await Promise.all([runPreflight(), loadEnv()]);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -291,12 +315,24 @@ export default function ConfigureComponentsPage() {
     );
   }
 
-  // Saved components whose own checks and provider account pass. With Render
-  // and Neon still to come, that is the Vercel frontends.
+  // Saved components whose own checks and provider account pass.
   const deployableIds = dirty || !preflight ? [] : drafts.map((d) => d.key).filter((key) => preflight.deployable?.[key]);
   const canDeploy = deployableIds.length > 0 && !deploying;
-  const vercelCheck = preflight?.checks.find((check) => check.id === "credential:vercel");
-  const needsVercel = vercelCheck && vercelCheck.status !== "pass";
+  // Every check passed: one "Deploy all" runs database → backend → frontend as a release (Phase 8).
+  const canDeployAll = !dirty && Boolean(preflight?.ok) && drafts.length > 0 && !deploying;
+  const accountCheck = preflight?.checks.find((check) => check.id.startsWith("credential:") && check.status !== "pass");
+
+  async function onDeployAll() {
+    setDeploying("all");
+    setError("");
+    try {
+      await deployAll(projectId);
+      router.push(`/deploy/${projectId}`);
+    } catch (e) {
+      setError((e as Error).message);
+      setDeploying(null);
+    }
+  }
 
   async function deploy(ids: string[]) {
     if (ids.length === 0) return;
@@ -330,21 +366,32 @@ export default function ConfigureComponentsPage() {
             >
               <Icon name="refresh" size={14} /> {proposing ? "Analysing…" : "Reload from analysis"}
             </button>
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={!canDeploy}
-              title={
-                canDeploy
-                  ? `Deploy ${deployableIds.length === 1 ? "the component" : `${deployableIds.length} components`} that passed pre-flight`
-                  : dirty
-                    ? "Save first, then pre-flight runs"
-                    : "A component deploys once its checks and its provider account pass. Render and Neon arrive in Phases 7 and 8."
-              }
-              onClick={() => void deploy(deployableIds)}
-            >
-              <Icon name="rocket" size={15} /> {deploying ? "Deploying…" : "Deploy"}
-            </button>
+            {canDeployAll ? (
+              <button
+                className="button button-primary"
+                type="button"
+                title="Provision the database, deploy the backend with its DATABASE_URL, then the frontend with the backend's URL"
+                onClick={() => void onDeployAll()}
+              >
+                <Icon name="rocket" size={15} /> Deploy all
+              </button>
+            ) : (
+              <button
+                className="button button-primary"
+                type="button"
+                disabled={!canDeploy}
+                title={
+                  canDeploy
+                    ? `Deploy ${deployableIds.length === 1 ? "the component" : `${deployableIds.length} components`} that passed pre-flight. Deploy all appears once every check passes.`
+                    : dirty
+                      ? "Save first, then pre-flight runs"
+                      : "A component deploys once its checks and its provider account pass."
+                }
+                onClick={() => void deploy(deployableIds)}
+              >
+                <Icon name="rocket" size={15} /> {deploying ? "Deploying…" : "Deploy"}
+              </button>
+            )}
           </>
         }
       />
@@ -355,11 +402,11 @@ export default function ConfigureComponentsPage() {
           <span>{error}</span>
         </div>
       ) : null}
-      {needsVercel && !dirty ? (
+      {accountCheck && !dirty ? (
         <div className="callout" style={{ marginBottom: 14 }}>
           <Icon name="link" size={15} />
           <span>
-            {vercelCheck.message}{" "}
+            {accountCheck.message}{" "}
             <Link className="text-link" href="/settings">
               Open Settings
             </Link>
@@ -396,10 +443,32 @@ export default function ConfigureComponentsPage() {
         </div>
       ) : (
         <div style={{ display: "grid", gap: 14 }}>
+          {env && env.components.some((c) => c.kind === "backend") ? (
+            <div className="panel panel-pad">
+              <div className="panel-title-row" style={{ marginBottom: 0 }}>
+                <div>
+                  <h3>Shared env vars</h3>
+                  <p>Sent to every backend and to Docker builds. A backend&apos;s own variable of the same name wins.</p>
+                </div>
+              </div>
+              <EnvEditor
+                key={`shared:${envSignature(env.shared)}`}
+                projectId={projectId}
+                componentId={null}
+                target={{ kind: "shared" }}
+                label="Shared"
+                vars={env.shared}
+                onSaved={onEnvSaved}
+              />
+            </div>
+          ) : null}
           {drafts.map((draft) => (
             <ComponentCard
               key={draft.key}
+              projectId={projectId}
               draft={draft}
+              env={dirty ? undefined : env?.components.find((c) => c.componentId === draft.key)}
+              onEnvSaved={onEnvSaved}
               onChange={(patch) => edit(draft.key, patch)}
               onRemove={() => removeDraft(draft.key)}
               deployable={!dirty && Boolean(preflight?.deployable?.[draft.key])}
@@ -472,15 +541,26 @@ export default function ConfigureComponentsPage() {
   );
 }
 
+/** Remounts an editor when its saved set changes (a save, or a reload). */
+const envSignature = (vars: { key: string; isSecret: boolean; updatedAt: string }[]) =>
+  vars.map((v) => `${v.key}${v.isSecret ? "*" : ""}@${v.updatedAt}`).join(",");
+
 function ComponentCard({
+  projectId,
   draft,
+  env,
+  onEnvSaved,
   onChange,
   onRemove,
   deployable,
   deploying,
   onDeploy,
 }: {
+  projectId: string;
   draft: Draft;
+  /** The saved component's env vars; undefined while it (or the page) has unsaved edits. */
+  env?: ComponentEnvView;
+  onEnvSaved: (view: EnvironmentView) => void;
   onChange: (patch: Partial<Draft>) => void;
   onRemove: () => void;
   deployable: boolean;
@@ -490,6 +570,7 @@ function ComponentCard({
   const isDatabase = draft.kind === "database";
   const provider = draft.kind ? PROVIDER_FOR_KIND[draft.kind] : null;
   const id = (field: string) => `${draft.key}-${field}`;
+  const [envOpen, setEnvOpen] = useState(false);
 
   return (
     <div className="panel panel-pad">
@@ -513,9 +594,22 @@ function ComponentCard({
               type="button"
               onClick={onDeploy}
               disabled={!deployable || deploying}
-              title={deployable ? `Deploy ${draft.name} to ${PROVIDER_LABEL[provider]}` : "Save, then pass pre-flight"}
+              title={
+                deployable
+                  ? isDatabase
+                    ? `Create (or check) the Postgres database for ${draft.name} on Neon`
+                    : `Deploy ${draft.name} to ${PROVIDER_LABEL[provider]}`
+                  : "Save, then pass pre-flight"
+              }
             >
-              <Icon name="rocket" size={14} /> {deploying ? "Deploying…" : `Deploy to ${PROVIDER_LABEL[provider]}`}
+              <Icon name={isDatabase ? "database" : "rocket"} size={14} />{" "}
+              {deploying
+                ? isDatabase
+                  ? "Provisioning…"
+                  : "Deploying…"
+                : isDatabase
+                  ? "Provision on Neon"
+                  : `Deploy to ${PROVIDER_LABEL[provider]}`}
             </button>
           ) : null}
           <button className="button button-danger" type="button" onClick={onRemove} aria-label={`Remove ${draft.name}`}>
@@ -553,10 +647,24 @@ function ComponentCard({
         )}
 
         {isDatabase ? (
-          <p className="field-hint field-full">
-            Provisioned on Neon in a later phase. Its DATABASE_URL is handed to the backend, so pre-flight
-            does not ask you for one.
-          </p>
+          <>
+            <label className="field-label" htmlFor={id("framework")}>
+              Engine
+              <input
+                id={id("framework")}
+                value={draft.framework}
+                onChange={(e) => onChange({ framework: e.target.value })}
+                placeholder="postgres"
+              />
+              <p className="field-hint">Neon hosts Postgres only.</p>
+            </label>
+            <p className="field-hint field-full">
+              A Postgres database is created in your Neon account (region and version from Settings). The backend is
+              deployed with {DATABASE_ENV_KEYS.join(" (pooled) and ")} (direct), so pre-flight does not ask you for
+              them. Migrations are not run for you: add one to the backend&apos;s build command, e.g.{" "}
+              <code>npm install &amp;&amp; npx prisma migrate deploy</code>.
+            </p>
+          </>
         ) : (
           <>
             <label className="field-label" htmlFor={id("rootDir")}>
@@ -636,6 +744,38 @@ function ComponentCard({
           </>
         )}
       </div>
+
+      {isDatabase ? (
+        <p className="field-hint" style={{ marginTop: 14 }}>
+          No env vars here: the backend receives {DATABASE_ENV_KEYS.join(" and ")}.
+        </p>
+      ) : env && (draft.kind === "frontend" || draft.kind === "backend") ? (
+        <div style={{ marginTop: 14 }}>
+          <button className="button button-ghost" type="button" onClick={() => setEnvOpen((open) => !open)}>
+            <Icon name={envOpen ? "chevron-down" : "chevron-right"} size={13} /> Environment ({env.vars.length}
+            {env.receivesShared ? " + shared" : ""})
+            {env.pendingRedeploy ? <span className="status-pill status-amber">redeploy to apply</span> : null}
+          </button>
+          {envOpen ? (
+            <EnvEditor
+              key={`${env.componentId}:${envSignature(env.vars)}`}
+              projectId={projectId}
+              componentId={env.componentId}
+              target={{ kind: draft.kind, provider: env.provider }}
+              label={`${draft.name} → Environment`}
+              vars={env.vars}
+              system={env.system}
+              pendingRedeploy={env.pendingRedeploy}
+              onRedeploy={deployable ? async () => onDeploy() : undefined}
+              onSaved={onEnvSaved}
+            />
+          ) : null}
+        </div>
+      ) : !isDatabase && draft.kind ? (
+        <p className="field-hint" style={{ marginTop: 14 }}>
+          Save the components to edit this one&apos;s environment variables.
+        </p>
+      ) : null}
     </div>
   );
 }

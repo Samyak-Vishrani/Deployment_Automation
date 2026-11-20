@@ -13,7 +13,7 @@ import type { Analysis, Prisma, PrismaClient, Project, ProjectComponent } from "
 import { HttpError } from "@/lib/api/http-error";
 import { removeDir } from "@/lib/common/fs-utils";
 import { redact } from "@/lib/common/redact";
-import { resolveDataDir } from "@/lib/deployments/deployment-logs.service";
+import { resolveDataDir } from "@/lib/common/data-dir";
 import { GithubError, type GithubAppService } from "@/lib/github/github-app.service";
 import { getFileContent, getRepositoryTree, GitHubApiError } from "@/lib/github/github.service";
 import type { ParsedRepo } from "@/lib/github/repo-url";

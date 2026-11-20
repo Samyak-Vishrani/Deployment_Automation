@@ -119,9 +119,9 @@ describe("log mapping", () => {
       { type: "stdout", created: 5, payload: { text: "   ", id: "e" } },
     ]);
     expect(lines).toEqual([
-      { id: "a", at: 1, stream: "info", text: "$ npm run build" },
-      { id: "b", at: 2, stream: "stdout", text: "compiled" },
-      { id: "c", at: 3, stream: "stderr", text: "warn" },
+      { id: "a", at: 1, stream: "info", text: "$ npm run build", phase: "build" },
+      { id: "b", at: 2, stream: "stdout", text: "compiled", phase: "build" },
+      { id: "c", at: 3, stream: "stderr", text: "warn", phase: "build" },
     ]);
   });
 

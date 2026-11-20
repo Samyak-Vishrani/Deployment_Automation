@@ -16,8 +16,14 @@ Browser ──► backend :3001 ──x-internal-token──► vercel_integrati
 - **Stack:** Node 22, TypeScript run with `tsx`, Fastify, Prisma, Vitest.
 - **Data:** the same Postgres as the backend, but its own schema (`?schema=vercel`). It has no
   foreign keys into the backend's tables, and neither service reads the other's tables.
-- **Imports:** none from `backend/lib`. `secret-box`, `redact` and `fs-utils` are copied in under
-  `src/` so the service builds and deploys on its own.
+- **Imports:** none from `backend/lib` or the other services. The plumbing every integration
+  shares (internal-token check, secret-box, redact, retrying fetch, provider errors, callback
+  client, outbox, deploy queue, event contract) comes from `@orbitops/integration-common`
+  (`backend/integration_common`), linked by `npm install` as `file:../integration_common`.
+  `fs-utils` is still a copy of the backend's, because only this service needs it.
+- **Superseded copies:** files named `xxx_*` are the old copies replaced by
+  `integration_common`. They are kept for review, excluded from `tsc` and Vitest, and can be
+  deleted.
 - **Listens on** `127.0.0.1` only. Every route except `/health` requires `x-internal-token`.
 
 ## Run it
@@ -42,9 +48,37 @@ The service fails at startup with a list of whatever is missing.
 
 ## How a deploy runs
 
-1. **The backend sends `POST /deployments`.** The body holds the component's build settings, the
-   repo, the exact commit SHA and a short-lived GitHub installation token. The service stores
-   everything except the token and returns 202.
+1. **The backend sends `POST /deployments`.** The body holds:
+   - the component's build settings;
+   - the repo and the exact commit SHA;
+   - a short-lived GitHub installation token;
+   - since Phase 8, `publicEnvVars`: the backend's URL under the key the framework reads, e.g.
+     `NEXT_PUBLIC_API_URL`.
+
+   The service stores everything except the token and returns 202.
+   - `publicEnvVars` are public values (they end up in the browser bundle), so they are stored and
+     may be logged.
+   - Keys that look like secrets (`SECRET`, `TOKEN`, `KEY`, `PASSWORD`…) are refused.
+   - Absent means the project's env vars are left alone.
+   - Since Phase 9, `envVars`: the frontend's own variables, `{ key, value, secret }`. They are
+     **never stored**: they are held in memory (`EnvVault` from `integration_common`) until the
+     run takes them, and only their keys are kept (`input.envKeys`). Absent means the project's
+     user vars are left alone.
+2. **Public env vars are set before the deploy**, because frameworks inline them at build time:
+   - they are upserted as plain `production` + `preview` vars;
+   - keys this service set before and no longer sends are removed;
+   - variables added on Vercel's dashboard are never touched;
+   - an unchanged set (`VercelProject.envHash`) costs no API call.
+
+   The user's own `envVars` follow (Phase 9):
+   - secrets are set as **sensitive** (write-only on Vercel too), the rest as **encrypted**, for
+     `production` + `preview`;
+   - keys set before and no longer sent are deleted, and a key whose secret flag flipped is deleted
+     and created again, because Vercel cannot turn a Secret into a Config var in place;
+   - an unchanged set (`VercelProject.userEnvHash`) costs no API call;
+   - the log names keys only, and every value is scrubbed from the build log relayed back;
+   - a run that has `envKeys` but lost its values (the vault's hour ran out, or a restart) fails
+     with `vercel_interrupted` ("deploy again").
 2. **The project is created or updated** (`src/vercel/vercel.provider.ts`):
    - On first deploy it creates the Vercel project, linked to the GitHub repo when Vercel's GitHub
      app can see it, then turns off Vercel's own deploy-on-push
@@ -89,6 +123,24 @@ All routes except `/health` need `x-internal-token: <INTERNAL_SERVICE_TOKEN>`.
 | `POST /deployments/:deploymentId/cancel` | cancel here and on Vercel |
 | `PUT /components/:componentId/env?userId=` | Phase 9 hook: upsert env vars on the Vercel project |
 | `DELETE /components/:componentId?userId=` | delete the Vercel project; not called by the MVP |
+
+### Log proxy (Phase 12)
+
+`GET /log-proxy/components/:componentId/runtime-logs?userId=` is for `backend/logs` only, which
+holds all the log code. It is read-only:
+- **Auth:** it takes `x-logs-token: <LOGS_PROXY_TOKEN>`. The internal token does not open it, and
+  `LOGS_PROXY_TOKEN` opens nothing else. Unset = 503.
+- **Upstream:** it looks up the component's live deployment, adds the user's token, and pipes
+  Vercel's runtime-log stream back unchanged.
+- **Behaviour:** Vercel answers only once there is a log line. Closing the request closes the
+  upstream.
+
+Build logs during a deploy keep flowing through the runner, as before. Since Phase 12 every line
+says whether this service wrote it (`origin: "orbitops"`) or pulled it from Vercel
+(`origin: "provider"`, with `phase`).
+
+`npm run spike:runtime` (`scripts/runtime-logs-spike.ts`) records what the real runtime-logs
+stream sends for a deployment.
 
 ## Checking the Vercel API against your account
 

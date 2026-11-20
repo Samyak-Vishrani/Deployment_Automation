@@ -51,7 +51,8 @@ export class IntegrationServiceClient {
     );
   }
 
-  protected async call<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
+  /** `timeoutMs` overrides the client's default for one slow call (Neon's synchronous provisioning). */
+  protected async call<T>(method: HttpMethod, path: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
     const config = this.loadConfig();
     if (!config.token) {
       throw new HttpError(
@@ -70,7 +71,7 @@ export class IntegrationServiceClient {
           ...(body !== undefined ? { "content-type": "application/json" } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
         cache: "no-store",
       });
     } catch (error) {
@@ -103,5 +104,54 @@ export class IntegrationServiceClient {
       );
     }
     return parsed as T;
+  }
+
+  /**
+   * A streamed response (Phase 12: logs). No timeout: `signal` ends it. A
+   * non-2xx answer is mapped exactly like `call()`; a 2xx is returned as is,
+   * body unread, so the caller can read its headers and stream it.
+   */
+  protected async openStream(path: string, signal: AbortSignal, method: HttpMethod = "GET"): Promise<Response> {
+    const config = this.loadConfig();
+    if (!config.token) {
+      throw new HttpError(
+        `${this.info.tokenVar} is not set in backend/.env, so the ${this.info.label} integration cannot be reached.`,
+        503,
+        this.info.unavailableCode,
+      );
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${config.baseUrl}${path}`, {
+        method,
+        headers: { "x-internal-token": config.token },
+        signal,
+        cache: "no-store",
+      });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw this.unavailable("connection refused");
+    }
+    if (response.ok) return response;
+
+    const text = await response.text().catch(() => "");
+    let error: { error?: string; message?: string } | undefined;
+    try {
+      error = text ? JSON.parse(text) : undefined;
+    } catch {
+      error = undefined;
+    }
+    if (response.status === 401) {
+      throw new HttpError(
+        `The ${this.info.label} integration rejected this backend's ${this.info.tokenVar}; it must be the same in both .env files.`,
+        503,
+        this.info.unavailableCode,
+      );
+    }
+    throw new HttpError(
+      error?.message ?? `The ${this.info.label} integration answered HTTP ${response.status}.`,
+      response.status >= 500 && response.status !== 503 ? 502 : response.status,
+      error?.error ?? `${this.info.label.toLowerCase()}_error`,
+    );
   }
 }

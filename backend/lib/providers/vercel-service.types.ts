@@ -38,6 +38,18 @@ export interface VercelDeployRequest {
   commitSha: string;
   /** Installation token for the upload fallback's source download. Never stored by the service. */
   githubToken?: string;
+  /**
+   * Public, non-secret env vars set on the Vercel project before it builds:
+   * the backend's URL (Phase 8). Absent = leave the project's env alone;
+   * [] = remove the ones set before.
+   */
+  publicEnvVars?: Array<{ key: string; value: string }>;
+  /**
+   * The frontend's own env vars (Phase 9). Never stored by the service: held
+   * in memory for the run, set on the Vercel project before the build, as
+   * "sensitive" (secret) or "encrypted". [] = remove the ones set before.
+   */
+  envVars?: Array<{ key: string; value: string; secret: boolean }>;
 }
 
 export interface VercelDeploymentView {
@@ -64,7 +76,17 @@ export type ProviderEvent =
       url: string | null;
       inspectorUrl: string | null;
     }
-  | { type: "logs"; lines: Array<{ at: number; stream: "stdout" | "stderr" | "info"; text: string }> }
+  | {
+      type: "logs";
+      lines: Array<{
+        at: number;
+        stream: "stdout" | "stderr" | "info";
+        text: string;
+        /** Phase 12: build vs runtime output, and who wrote the line (the integration service, or the provider). */
+        phase?: "build" | "deploy" | "runtime";
+        origin?: "orbitops" | "provider";
+      }>;
+    }
   | {
       type: "terminal";
       status: "live" | "failed" | "cancelled";

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ProviderError } from "../http/provider-error";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import type { ComponentSpec, EnvVar, RepoSpec } from "../types";
 import { renderRuntime, type RenderRuntime } from "./runtime-map";
 

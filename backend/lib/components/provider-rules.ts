@@ -34,10 +34,13 @@ export function isAllowedProvider(kind: ComponentKind, provider: ProviderId): bo
 }
 
 /**
- * Providers that can deploy today. Neon is configurable but waits for
- * Phase 8; pre-flight reports it as pending.
+ * Providers that can deploy today: Vercel (Phase 6), Render (Phase 7), Neon
+ * (Phase 8: "deploying" a database component provisions it), local Docker.
  */
-export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "render", "local_docker"]);
+export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "render", "neon", "local_docker"]);
+
+/** Database engines Neon can host. An empty framework means "unspecified", taken as Postgres. */
+export const NEON_ENGINES: ReadonlySet<string> = new Set(["", "postgres", "postgresql", "pg", "neon"]);
 
 /**
  * Frameworks Render can run, by runtime. A mirror of

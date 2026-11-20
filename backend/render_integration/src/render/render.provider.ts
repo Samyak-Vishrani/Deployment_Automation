@@ -1,5 +1,5 @@
-import { abortableSleep } from "../http/provider-fetch";
-import { ProviderError } from "../http/provider-error";
+import { abortableSleep } from "@orbitops/integration-common/provider-fetch";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import type { ComponentSpec, EnvVar, LogLine, NormalisedStatus, RepoSpec } from "../types";
 import { envHash, keysToDelete, toEnvVars } from "./env-vars";
 import { safeServiceUrl } from "./error-hints";

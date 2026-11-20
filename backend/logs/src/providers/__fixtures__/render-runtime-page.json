@@ -1,0 +1,12 @@
+{
+  "hasMore": false,
+  "nextStartTime": "2026-11-04T10:00:05Z",
+  "nextEndTime": "2026-11-04T10:15:00Z",
+  "logs": [
+    { "id": "l1", "message": "==> Build successful", "timestamp": "2026-11-04T10:00:00Z", "labels": [{ "name": "type", "value": "build" }] },
+    { "id": "l2", "message": "Server listening on 10000\n", "timestamp": "2026-11-04T10:00:01Z", "labels": [{ "name": "type", "value": "app" }, { "name": "level", "value": "info" }, { "name": "instance", "value": "srv-1-abc" }] },
+    { "id": "l3", "message": "GET /db 200 12ms", "timestamp": "2026-11-04T10:00:02Z", "labels": [{ "name": "type", "value": "request" }, { "name": "method", "value": "GET" }, { "name": "path", "value": "/db" }, { "name": "statusCode", "value": "200" }] },
+    { "id": "l4", "message": "Error: connect ECONNREFUSED", "timestamp": "2026-11-04T10:00:03Z", "labels": [{ "name": "type", "value": "app" }, { "name": "level", "value": "error" }] },
+    { "id": "l5", "message": "  ", "timestamp": "2026-11-04T10:00:04Z", "labels": [{ "name": "type", "value": "app" }] }
+  ]
+}

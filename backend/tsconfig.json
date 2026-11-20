@@ -38,6 +38,10 @@
   "exclude": [
     "node_modules",
     "vercel_integration",
-    "render_integration"
+    "render_integration",
+    "neondb_integration",
+    "integration_common",
+    "logs",
+    "**/xxx*"
   ]
 }

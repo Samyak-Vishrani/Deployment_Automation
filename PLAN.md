@@ -16,7 +16,38 @@ schemas). Vercel deploys went live on 2026-11-02 and Render on 2026-11-03, both 
 `https://vercel-integration-test-backend.onrender.com`, with the health check returning 200. A push
 redeployed only the backend. Tests pass: backend 301, `vercel_integration` 96, `render_integration` 113.
 Still open for 6 and 7: the API spikes (`npm run spike`, needs real tokens) and the remaining manual
-edge-case checks (cancel, restart-resume, broken build, second user, …). **Next: Phase 8 (Neon).**
+edge-case checks (cancel, restart-resume, broken build, second user, …).
+
+**Phase 8 (Neon + Deploy all) is implemented and tested, but not yet verified live** (2026-11-03,
+`Plans/Plans_Remaining/PLAN_PHASE_8.md`). What is in:
+- `backend/neondb_integration` (:3004), its own service;
+- the plumbing shared by the three integration services, extracted to `backend/integration_common`;
+- `DATABASE_URL` / `DATABASE_URL_UNPOOLED` injected into Render, and the backend's URL into Vercel;
+- **Deploy all** as a `Release`.
+
+Migrations are applied locally. Tests: backend 335, `integration_common` 37, `vercel_integration` 88,
+`render_integration` 96, `neondb_integration` 66, frontend 6. Open: a Neon API key for the spike and
+the live end-to-end checks, and a live Vercel + Render redeploy after the refactor.
+**Phase 9 (environment variables) is implemented and tested, but not yet verified live** (2026-11-04,
+`Plans/Plans_Remaining/PLAN_PHASE_9.md`). What is in:
+- an encrypted `EnvVar` table, per component plus a shared set;
+- an editor on Configure, with secrets write-only;
+- Vercel frontends get their own vars;
+- pre-flight counts per-component and system keys.
+
+Migrations are applied locally. Tests: backend 366, `integration_common` 42, `vercel_integration` 97,
+`render_integration` 96, `neondb_integration` 66, frontend 9.
+**Phase 12 (logs) is implemented and tested, and checked live against the real Render and Vercel
+APIs** (2026-11-04, `Plans/Plans_Remaining/PLAN_PHASE_12.md`). Done ahead of 10 and 11 at the
+user's request. What is in:
+- a new `backend/logs` service (:3005) that owns all log code: structured build logs, race-free
+  resumable streams, and live runtime logs;
+- runtime logs come through read-only `/log-proxy` routes in the Vercel and Render services;
+- a Logs page with one tab per component, so providers are never mixed.
+
+Tests: backend 382, `logs` 39, `integration_common` 47, `vercel_integration` 103,
+`render_integration` 102, `neondb_integration` 66, frontend 12.
+**Next: verify Phases 8, 9 and 12 in the UI end to end, then Phase 10 (dashboard).**
 
 ---
 
@@ -31,11 +62,11 @@ edge-case checks (cancel, restart-resume, broken build, second user, …). **Nex
 | 5 | Deployment configuration | ✅ | Migration applied; the configure → pre-flight → Deploy flow drove the live Vercel and Render deploys |
 | 6 | Vercel integration | ✅ | Own service (`backend/vercel_integration`); a Next.js subfolder deployed live on `*.vercel.app` (upload fallback); spike pending |
 | 7 | Render integration | ✅ | Own service (`backend/render_integration`); an Express subfolder live on `*.onrender.com`, push-to-deploy verified; spike pending |
-| 8 | Neon integration | ⬜ | — |
-| 9 | Environment variables | 🟡 | `envVars` column, values never returned by the API, log redaction; project env vars are synced to Render before each deploy (Phase 7); not encrypted per component yet |
-| 10 | Dashboard | 🟡 | Project list, status badges, live `/events` SSE |
-| 11 | Deployment history | 🟡 | Per-project history and detail page; component and provider columns (Phase 6); push-to-deploy for Vercel and Render components |
-| 12 | Logs | 🟡 | Local log file + SSE replay-then-tail; Vercel (Phase 6) and Render (Phase 7) build/app logs relayed into it |
+| 8 | Neon integration | 🟡 | Code complete as its own service (`backend/neondb_integration`), plus Deploy all (`Release`) and `integration_common`; tests pass; needs a Neon key for the spike and the live check |
+| 9 | Environment variables | 🟡 | Code complete: sealed `EnvVar` rows per component + shared; editor with write-only secrets, paste `.env`, add from `.env.example`; Render, Vercel (sensitive/encrypted) and Docker get them on the next deploy; tests pass; live check open |
+| 10 | Dashboard | 🟡 | Project list, status badges, live `/events` SSE; Deploy all, per-component deploy, release strip (Phase 8) |
+| 11 | Deployment history | 🟡 | Per-project history and detail page; component and provider columns (Phase 6); push-to-deploy for Vercel and Render components; `Release` with a per-project number (Phase 8) |
+| 12 | Logs | 🟡 | Code complete in `backend/logs` (:3005): structured, resumable build logs per deployment, live runtime logs (Render, Vercel, Docker) via log proxies, Logs page per component; runtime tails checked live; full UI pass open |
 | 13 | AI assistant | ⬜ | — |
 
 ---
@@ -236,7 +267,7 @@ drove the live Vercel and Render deploys of `Vercel_Integration_test`.
 Built as a **separate service**, `backend/vercel_integration/` (Fastify + Prisma, Postgres schema
 `vercel`, port 3002). The backend talks to it with a shared `INTERNAL_SERVICE_TOKEN`; it posts
 deploy events back to `/api/internal/provider-events`, HMAC-signed. Details:
-`Plans/Plans_Remaining/PLAN_PHASE_6.md` and `backend/vercel_integration/README.md`.
+`Plans/Plans_Executed/PLAN_PHASE_6.md` and `backend/vercel_integration/README.md`.
 
 - ✅ **Provider** (`vercel_integration/src/vercel/vercel.provider.ts`):
   - `validateCredentials`, `ensureProject`, `deploy`, `getStatus`, `getLogs`, `cancel`,
@@ -295,7 +326,7 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 `render`, port 3003), mirroring the Vercel one with its **own** secrets: the backend calls it with
 `RENDER_SERVICE_TOKEN`; it posts deploy events to `/api/internal/provider-events` tagged
 `x-orbitops-provider: render` and signed with `RENDER_CALLBACK_SECRET`. Details:
-`Plans/Plans_Remaining/PLAN_PHASE_7.md` and `backend/render_integration/README.md`.
+`Plans/Plans_Executed/PLAN_PHASE_7.md` and `backend/render_integration/README.md`.
 
 - ✅ **Credentials:**
   - The user pastes a Render API key in Settings → Integrations. It is validated with
@@ -354,18 +385,55 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 
 ---
 
-## Phase 8 — Neon Database ⬜
+## Phase 8 — Neon Database + Deploy all 🟡
 
 **Goal:** provision Postgres and pass it to the backend automatically.
 
-- ⬜ `DatabaseProvider` interface: `provision(project) → { resourceId, connectionUri }`, `getStatus`, `destroy`
-- ⬜ Credential: Neon API key in `/settings`, validated with `GET /api/v2/users/me`
-- ⬜ `NeonProvider.provision`: `POST /api/v2/projects` → take the pooled connection URI from the response
-  (or `GET /projects/:id/connection_uri`)
-- ⬜ Store `DATABASE_URL` as an **encrypted, system-managed** env var on the backend component
-- ⬜ Orchestration order in `DeploymentsService.deployProject()`:
-  `Neon provision (idempotent) → set DATABASE_URL on Render → deploy backend → deploy frontend (with NEXT_PUBLIC_API_URL = backend url)`
-- ⬜ Optional: run migrations as part of the backend build command (documented, set by the user)
+Built as a **separate service**, `backend/neondb_integration/` (Fastify + Prisma, Postgres schema
+`neon`, port 3004, its own `NEON_SERVICE_TOKEN`). Provisioning is synchronous, so it sends no
+callbacks. Details: `Plans/Plans_Remaining/PLAN_PHASE_8.md` and `backend/neondb_integration/README.md`.
+
+- ✅ **Shared plumbing extracted** to `backend/integration_common`, used by all three services:
+  - internal auth, secret-box, redact;
+  - provider fetch and errors;
+  - the callback client, outbox and deploy queue;
+  - the event contract and config helpers.
+
+  The old copies are renamed `xxx_*` for review.
+- ✅ **Credential:** a Neon API key in Settings.
+  - Validated with `GET /users/me` (or `GET /projects` for an organization key), then sealed.
+  - Organization picker (locked once a project exists).
+  - Region (default `aws-us-west-2`, next to Render) and Postgres version for new projects.
+- ✅ **`NeonProvider`:**
+  - `POST /projects`, then wait for the project's operations;
+  - project, branch, database and role are stored before the wait, so a retry resumes;
+  - a project deleted on Neon is recreated empty, with a warning;
+  - a failed setup is replaced;
+  - connection strings come fresh from `GET /projects/:id/connection_uri` (pooled and direct).
+- ✅ **No connection string is stored anywhere** (deliberately, instead of an encrypted env var):
+  the backend asks for it per Render deploy and sends `DATABASE_URL` (pooled) and
+  `DATABASE_URL_UNPOOLED` (direct) in the request body only.
+- ✅ **Orchestration:** **Deploy all** creates a `Release` and runs it as Neon provision → Render
+  backend with `DATABASE_URL` → Vercel frontend with the backend's URL.
+  - The URL goes under the framework's key, e.g. `NEXT_PUBLIC_API_URL`.
+  - Each stage waits for the one before to be live.
+  - Restart-safe; cancel.
+- ✅ A lone backend deploy provisions the database first. Push redeploys get the same env vars.
+- ✅ **Pre-flight:**
+  - the Neon account;
+  - a Postgres engine;
+  - migrations advice: they are the user's, in the build command, with Prisma's
+    `directUrl = env("DATABASE_URL_UNPOOLED")`.
+- ✅ **UI:**
+  - the Neon card in Settings;
+  - **Provision on Neon** and **Deploy all** on Configure;
+  - the release strip and the database row (● CONNECTED, Open on Neon) on the project page.
+- ⬜ API spike against a real Neon account (`npm run spike`). It shows whether `org_id` is
+  required, and the exact texts of the limit and locked errors.
+- ⬜ Live check: one Deploy all on `Vercel_Integration_test`, with a `/db` route that queries
+  Postgres.
+- ⬜ Live Vercel + Render redeploy after the `integration_common` refactor. Startup and opening the
+  stored credentials were checked.
 
 **Done when:** one Deploy click creates a Neon DB, and the Render backend connects to it with no manual copy-paste.
 
@@ -373,15 +441,30 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 
 ## Phase 9 — Environment Variables 🟡
 
-- ✅ `envVars` stored per project; the API returns keys only, never values — `projects/projects.service.ts`
-- ✅ Secret redaction in logs — `common/redact.ts`
-- ✅ Never passed as build args (documented in schema)
-- ⬜ `EnvVar` model per component: `key, valueEnc, isSecret, source (user|system), target (build|runtime|both)`
-- 🟡 AES-256-GCM encryption at rest (shared with GitHub and provider tokens)
-- ⬜ `GET/PUT /api/projects/:id/components/:cid/env` — values masked, write-only secrets
-- 🟡 Sync to the provider on save and before each deploy (`setEnv`): ✅ Render syncs `Project.envVars` before each deploy (Phase 7); Vercel ⬜; sync on save ⬜
-- ⬜ Pre-fill keys from `.env.example` found during analysis
-- ⬜ UI: key/value editor per component, reveal-on-click only for non-secret values
+Code complete and tested (2026-11-04); the live check is open. Details:
+`Plans/Plans_Remaining/PLAN_PHASE_9.md`.
+
+- ✅ API lists return keys only, never values; secret redaction in logs; never Docker build args
+- ✅ `EnvVar` model (`backend/lib/env/`): `projectId, componentId (NULL = shared), key, valueEnc, isSecret`
+  - **Deviation:** no `source` column. System vars (`DATABASE_URL`, the API URL) are never stored;
+    they are computed (`system-env.ts`) and shown read-only.
+  - **Deviation:** no `target` column. Render and Vercel give every var to both build and runtime,
+    and Docker is runtime-only by design.
+- ✅ AES-256-GCM at rest for every value (`lib/crypto/secret-box.ts`). Old `Project.envVars` are
+  moved to shared rows at startup.
+- ✅ Routes: `GET/PUT /api/projects/:id/env` (shared), `PUT …/components/:cid/env`, reveal
+  `GET …/env/:key` (non-secrets only, `no-store`), `GET …/components/:cid/env/suggestions`
+- ✅ Sync before each deploy:
+  - Render: shared + its own + Neon's;
+  - Vercel: its own, as sensitive/encrypted, through an in-memory `EnvVault` in `vercel_integration`;
+  - Docker: shared.
+  - **Decided:** no sync on save. A deployed component shows "Env changed — redeploy to apply"
+    (`envRevision`).
+- ✅ Pre-fill from `.env.example`, read at the branch head on demand ("Add from .env.example");
+  pre-flight counts per-component and system keys
+- ✅ UI: an editor per component and for the shared set (`components/EnvEditor.tsx`). Reveal on click
+  is for non-secret values only; paste a `.env`; Save & redeploy.
+- ⬜ Live check on `Vercel_Integration_test` (see the plan's Verification)
 
 ---
 
@@ -390,11 +473,10 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 - ✅ Project list with status badges and relative times — `frontend/app/page.tsx`, `components/StatusBadge.tsx`
 - ✅ Live updates over the `/events` SSE with no polling — `hooks/useAppEvents.ts`, `events/`
 - ✅ Typed `api()` fetch wrapper — `frontend/app/lib/api.ts`
-- ⬜ Project page as component cards: Frontend (Vercel, ● LIVE, URL), Backend (Render, ● LIVE, URL),
-  Database (Neon, ● CONNECTED)
-- ⬜ "Latest deployment" summary row per component
-- ⬜ Deploy all / deploy one component / redeploy buttons
-- ⬜ Settings page: connected GitHub account + provider credentials
+- 🟡 Project page as component cards: a components table with provider, status (Database ● CONNECTED) and URL (Phase 8); cards ⬜
+- 🟡 "Latest deployment" summary: the latest release's steps with their status (Phase 8); per component ⬜
+- ✅ Deploy all / deploy one component / redeploy buttons (Phases 6–8)
+- ✅ Settings page: connected GitHub account + provider credentials (Vercel, Render, Neon)
 
 ---
 
@@ -405,8 +487,8 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 - ✅ `GET /projects/:id/deployments` (paged), `GET /deployments/:id`, cancel, rollback
 - ✅ Deployment detail page — `frontend/app/deployments/[id]/page.tsx`
 - ✅ Push-to-deploy pipeline: webhook → filters (branch, skip-ci, watch paths) → queue — `deployments/push-filter.ts`
-- 🟡 Add `componentId, provider, providerDeploymentId, url` (✅ Phase 6) and a per-project sequence number (`#12`)
-- ⬜ Group one "Deploy" click into a `Release` holding its component deployments
+- ✅ Add `componentId, provider, providerDeploymentId, url` (Phase 6) and a per-project sequence number (`Release.number`, `#12`, Phase 8)
+- ✅ Group one "Deploy" click into a `Release` holding its component deployments (Phase 8: `Release`, `Deployment.releaseId`)
 - ✅ Push-to-deploy now triggers provider deploys (per component, with watch paths = the component's `rootDir/**`): ✅ Vercel (Phase 6), ✅ Render (Phase 7, verified live)
 - 🟡 Rollback = provider redeploy of the previous successful `providerDeploymentId` / commit (service hooks exist: Vercel `redeploy`, Render `rollback`; no route or UI yet)
 - ⬜ History table: `#, component, provider, status, commit, duration`
@@ -415,14 +497,32 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 
 ## Phase 12 — Logs 🟡
 
-- ✅ Log writer → file + in-process bus, with redaction — `deployments/deployment-logs.service.ts`
-- ✅ `GET /deployments/:id/logs` and SSE `/logs/stream`, replay then tail, 15 s heartbeat
-- ✅ Frontend log viewer that autoscrolls only when pinned to the bottom
-- 🟡 Pull provider logs (`getLogs`) during the poll loop into the same log writer (✅ Vercel, Phase 6; ✅ Render, Phase 7;
-  Neon ⬜), so the existing SSE + viewer work unchanged
-- 🟡 Add our own orchestration lines: per-provider lines exist (`==> Preparing Render service`, `==> Deploying … to Render`,
-  `==> Live at …`); the cross-component ones (`==> Provisioning Neon`, deploy-all ordering) arrive with Phase 8
-- 🟡 Highlight error lines, and a "copy log" button
+Code complete (2026-11-04); details in `Plans/Plans_Remaining/PLAN_PHASE_12.md` and
+`backend/logs/README.md`. **All log code lives in `backend/logs`** (:3005), one service for logs
+as a whole.
+
+- ✅ **Build logs** are structured JSONL per deployment, `{ seq, at, source, phase, stream, text }`.
+  - Every line says whether it came from OrbitOps, Vercel, Render, Neon or Docker.
+  - Ingest is idempotent (`clientSeq`) and capped at 20 MB; the old `.log` files are still read.
+- ✅ **The main backend keeps no log files.** `RemoteLogWriter` batches lines to the service,
+  buffers 5000 while it is down, and falls back to its own tail for `logTail`.
+- ✅ **SSE `/logs/stream`:** each `entry` carries `id: <seq>`, and a reconnect resumes with
+  `Last-Event-ID`. The replay/subscribe race is fixed. Also `?format=entries` and `/logs/download`.
+- ✅ **Runtime logs, live and never stored:**
+  - Render app and request logs, polled through `render_integration`'s `/log-proxy` (30 reads a
+    minute, so a 3 s poll);
+  - Vercel function logs, streamed through `vercel_integration`'s `/log-proxy`;
+  - the local Docker container (`docker logs --follow`);
+  - Neon has none.
+  - Limits: 3 per user, and a stream ends after 15 minutes idle or 60 minutes in total.
+- ✅ Provider tokens never reach the logs service: `LOGS_PROXY_TOKEN` opens only `/log-proxy`.
+- ✅ **UI:**
+  - a **Logs** page with one tab per component, each with Build (deployment picker) and Runtime;
+  - `LogPane`: source chips, errors tinted and counted with ↑/↓, "Errors only", search, wrap,
+    copy, download, Jump to latest;
+  - the build page uses it too.
+- ✅ Our own orchestration lines (from Phases 6–8) are now tagged `orbitops`.
+- ⬜ A full UI pass: Deploy all, then every tab; a broken build; a restart mid-build.
 
 ---
 
@@ -431,6 +531,8 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 - ⬜ `ai/` module using the Claude API (`claude-sonnet-5` by default)
 - ⬜ `POST /api/deployments/:id/ask` — context: provider, framework, status, last ~500 log lines,
   env var **keys only** (never values), analysis result
+- ⬜ The combined, time-ordered log of a release (Phase 12 deliberately has none): read each
+  deployment's entries from `backend/logs` (`GET /deployments/:id/entries`) and merge them by `at`
 - ⬜ System prompt: diagnose, cite log lines, suggest a concrete fix; never invent env values
 - ⬜ UI: "Ask AI" on failed deployments, with a streamed answer
 - ⬜ Rate limit per user; redact again before sending
@@ -439,11 +541,11 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 
 ## Cross-cutting
 
-- ✅ `crypto/secret-box.ts` (AES-256-GCM, versioned key id) — used by GitHub tokens today; provider tokens and env vars next
-- ✅ Provider HTTP client: retries with backoff on 429/5xx, and error mapping to user-facing messages (`vercel_integration/src/http/`, Phase 6; copied into `render_integration`, which also honours `ratelimit-reset`, Phase 7)
-- ✅ Idempotency: `ensureProject` / `ensureService` look up before they create; provider resource ids are stored straight away (Phases 6–7)
+- ✅ `crypto/secret-box.ts` (AES-256-GCM, versioned key id): GitHub tokens, and env vars since Phase 9 (provider tokens are sealed in each integration service with its own key)
+- ✅ Provider HTTP client: retries with backoff on 429/5xx, and error mapping to user-facing messages (`integration_common/src/provider-fetch.ts` since Phase 8; honours `retry-after`, `ratelimit-reset` and `x-ratelimit-reset`)
+- ✅ Idempotency: `ensureProject` / `ensureService` / Neon's `ensure` look up before they create; provider resource ids are stored straight away (Phases 6–8)
 - 🟡 Contract tests per provider against recorded fixtures (stubbed-`fetch` unit tests exist; fixtures wait on the spikes); one opt-in live smoke test per provider ⬜
-- ⬜ Extract `integration_common` (internal auth, secret-box, outbox, provider-fetch, …) when Neon makes it three services
+- ✅ Extract `integration_common` (internal auth, secret-box, outbox, provider-fetch, …): done with Neon making it three services (Phase 8)
 - ✅ Security baseline carried over: no tokens in argv/logs, `shell: false`, strict input validation (`ValidationPipe` whitelist)
 
 ---
@@ -460,4 +562,4 @@ Built as a **separate service**, `backend/render_integration/` (Fastify + Prisma
 ## Suggested build order
 
 1 → 2 → 3 → 4 → 5 → 6 (vertical slice: one Next.js repo live on Vercel) → 7 → 8 → 9 → 10/11/12 polish → 13.
-Ship a demo after 6, and after 8. **Done through 7 (2026-11-03); Phase 8 (Neon) is next.**
+Ship a demo after 6, and after 8. **Done through 7; Phase 8 is implemented, pending its live check (2026-11-03).**

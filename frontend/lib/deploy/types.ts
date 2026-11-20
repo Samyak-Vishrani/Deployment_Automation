@@ -59,6 +59,8 @@ export type DeployRun = {
   queuedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  /** The "Deploy all" this belongs to (Phase 8); null for single deploys and pushes. */
+  releaseId?: string | null;
 };
 
 export type CreateDeployProjectInput = {
@@ -113,7 +115,9 @@ export type BranchList = {
 export type AppEvent =
   | { kind: "deployment"; projectId: string; deploymentId: string; status: string }
   | { kind: "project"; projectId: string; action: "created" | "updated" | "deleted" }
-  | { kind: "github"; action: string };
+  | { kind: "github"; action: string }
+  /** A "Deploy all" moved on (Phase 8): stage 0 database, 1 backend, 2 frontend, 3 done. */
+  | { kind: "release"; projectId: string; releaseId: string; status: string; stage: number };
 
 export type ComponentRole = "frontend" | "backend" | "unknown";
 
@@ -256,6 +260,13 @@ export type ProviderCredential = {
   /** Render: defaults for new services (fixed per service once it exists). */
   region?: string | null;
   plan?: string | null;
+  /** Neon: the organization new projects are created in (null = the key's default). */
+  orgId?: string | null;
+  orgName?: string | null;
+  orgs?: Array<{ id: string; name: string }>;
+  /** Neon: defaults for new databases (fixed per project once it exists). */
+  regionId?: string | null;
+  pgVersion?: number | null;
   /** Something already exists in the current team/workspace, so it is fixed. */
   scopeLocked?: boolean;
   lastValidatedAt?: string | null;
@@ -280,11 +291,71 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
 export const isFinished = (status: DeploymentStatus) =>
   status === "success" || status === "failed" || status === "cancelled";
 
-/** Providers that can deploy today; the others are configurable but arrive in later phases. */
-export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "render", "local_docker"]);
+/** Providers that can deploy today. A Neon database "deploys" by being provisioned (Phase 8). */
+export const CAN_DEPLOY: ReadonlySet<ProviderId> = new Set<ProviderId>(["vercel", "render", "neon", "local_docker"]);
 
 /** Providers whose account is connected in Settings → Integrations. */
-export type ConnectableProvider = "vercel" | "render";
+export type ConnectableProvider = "vercel" | "render" | "neon";
+
+/** Neon regions for new databases. Oregon sits next to Render's default region. */
+export const NEON_REGIONS = [
+  { id: "aws-us-east-1", label: "AWS US East (N. Virginia)" },
+  { id: "aws-us-east-2", label: "AWS US East (Ohio)" },
+  { id: "aws-us-west-2", label: "AWS US West (Oregon)" },
+  { id: "aws-eu-central-1", label: "AWS Europe (Frankfurt)" },
+  { id: "aws-eu-west-2", label: "AWS Europe (London)" },
+  { id: "aws-ap-southeast-1", label: "AWS Asia Pacific (Singapore)" },
+  { id: "aws-ap-southeast-2", label: "AWS Asia Pacific (Sydney)" },
+  { id: "aws-sa-east-1", label: "AWS South America (São Paulo)" },
+  { id: "azure-eastus2", label: "Azure East US 2 (Virginia)" },
+  { id: "azure-westus3", label: "Azure West US 3 (Arizona)" },
+  { id: "azure-gwc", label: "Azure Germany West Central (Frankfurt)" },
+] as const;
+
+export const NEON_PG_VERSIONS = [17, 16, 15] as const;
+
+/** The env vars a Neon database gives the backend. Names only; values never reach the browser. */
+export const DATABASE_ENV_KEYS = ["DATABASE_URL", "DATABASE_URL_UNPOOLED"] as const;
+
+export type ReleaseStatus = "running" | "success" | "failed" | "cancelled";
+
+/** One component's step in a release, with its deployment once started. */
+export type ReleaseStep = {
+  /** 0 database, 1 backend, 2 frontend. */
+  stage: number;
+  kind: ComponentKind;
+  componentId: string;
+  componentName: string;
+  provider: ProviderId;
+  deployment: {
+    id: string;
+    status: DeploymentStatus;
+    providerStatus: string | null;
+    url: string | null;
+    errorMessage: string | null;
+    queuedAt: string;
+    finishedAt: string | null;
+  } | null;
+};
+
+/** One "Deploy all" click: the project's components in order, at one commit. */
+export type Release = {
+  id: string;
+  projectId: string;
+  /** Per-project sequence, shown as #12. */
+  number: number;
+  status: ReleaseStatus;
+  /** 0 database, 1 backend, 2 frontend, 3 done. */
+  stage: number;
+  trigger: string;
+  branch: string;
+  commitSha: string;
+  commitMessage: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  steps: ReleaseStep[];
+};
 
 export const RENDER_REGIONS = [
   { id: "oregon", label: "Oregon (US West)" },
@@ -322,3 +393,110 @@ export function duration(start: string | null, end: string | null): string {
   const seconds = Math.round(ms / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
+
+// ------------------------------------------------------ env vars (Phase 9) --
+
+/** A stored env var as the API shows it: never its value. */
+export type EnvVarView = { key: string; isSecret: boolean; updatedAt: string };
+
+/** Set by OrbitOps at deploy time. Keys only; the values are never stored. */
+export type SystemEnvView = {
+  key: string;
+  source: "neon" | "backend";
+  /** The component it comes from. */
+  from: string;
+  /** A user value of the same key is used instead (the API URL); false = the system value wins (Neon). */
+  userWins: boolean;
+};
+
+export type ComponentEnvView = {
+  componentId: string;
+  name: string;
+  kind: ComponentKind;
+  provider: ProviderId;
+  vars: EnvVarView[];
+  system: SystemEnvView[];
+  /** Backends also get the shared set. */
+  receivesShared: boolean;
+  revision: number;
+  /** Saved env changes its running deployment does not have yet. */
+  pendingRedeploy: boolean;
+};
+
+export type EnvironmentView = {
+  projectId: string;
+  /** Sent to every backend and to local Docker deploys. */
+  shared: EnvVarView[];
+  components: ComponentEnvView[];
+};
+
+/** One row of a PUT. `value` omitted = keep the stored value. */
+export type EnvPutEntry = { key: string; value?: string; isSecret: boolean };
+
+export type EnvSuggestion = {
+  key: string;
+  /** The .env.example value, only for keys that do not look secret. */
+  example: string | null;
+  looksSecret: boolean;
+  alreadySet: boolean;
+  providedBySystem: boolean;
+};
+
+export type EnvSuggestions = { path: string; found: boolean; suggestions: EnvSuggestion[] };
+
+// ------------------------------------------------------------ logs (Phase 12) --
+
+/** Who wrote a build-log line. */
+export type LogSource = "orbitops" | "vercel" | "render" | "neon" | "docker";
+export type LogPhase = "setup" | "build" | "deploy" | "runtime";
+
+/** One stored build-log line of ONE deployment (`seq` is its SSE id). */
+export type DeployLogEntry = {
+  seq: number;
+  at: number;
+  source: LogSource;
+  phase: LogPhase;
+  stream: "info" | "stdout" | "stderr";
+  text: string;
+};
+
+/** One live line of a running app (never stored). */
+export type RuntimeLogEntry = {
+  id: string;
+  at: number;
+  source: LogSource;
+  stream: "stdout" | "stderr";
+  level?: string;
+  text: string;
+  request?: { method?: string; path?: string; status?: number };
+};
+
+export type LogsIndexDeployment = {
+  id: string;
+  status: DeploymentStatus;
+  trigger: string;
+  queuedAt: string;
+  finishedAt: string | null;
+  commitSha: string | null;
+  commitMessage: string | null;
+  releaseNumber: number | null;
+};
+
+export type LogsIndexComponent = {
+  componentId: string;
+  name: string;
+  kind: ComponentKind;
+  provider: ProviderId;
+  runtime: "available" | "not_deployed" | "unsupported";
+  runtimeNote: string | null;
+  deployments: LogsIndexDeployment[];
+};
+
+/** The Logs page: one tab per component, each with only its own deployments. */
+export type LogsIndex = {
+  projectId: string;
+  components: LogsIndexComponent[];
+  docker: { deployments: LogsIndexDeployment[]; runtime: "available" | "not_running" } | null;
+};
+
+export type RuntimeSince = "5m" | "15m" | "1h";

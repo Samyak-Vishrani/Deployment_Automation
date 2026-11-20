@@ -1,7 +1,7 @@
 import type { VercelCredential } from "@prisma/client";
 import { open, seal } from "../crypto/secret-box";
 import type { Db } from "../db";
-import { conflict, ProviderError, badRequest } from "../http/provider-error";
+import { conflict, ProviderError, badRequest } from "@orbitops/integration-common/provider-error";
 import type { AccountInfo, VercelProvider } from "../vercel/vercel.provider";
 
 export type CredentialState = "connected" | "invalid" | "missing";

@@ -8,12 +8,16 @@ import { Icon } from "@/components/ui/Icon";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusPill } from "@/components/ui/StatusPill";
 import {
+  cancelRelease,
   deleteDeployProject,
+  deployAll,
   deployComponent,
   deployProject,
   getDeployProject,
+  getEnvironment,
   listComponents,
   listDeployRuns,
+  listReleases,
   rollbackProject,
 } from "@/lib/deploy/client";
 import {
@@ -25,6 +29,9 @@ import {
   type DeployComponent,
   type DeployProject,
   type DeployRun,
+  type EnvironmentView,
+  type Release,
+  type ReleaseStatus,
 } from "@/lib/deploy/types";
 import { useAppEvents } from "@/lib/deploy/useAppEvents";
 import { relativeTime } from "@/lib/format";
@@ -37,25 +44,40 @@ const COMPONENT_PILL: Record<ComponentStatus, "pending" | "configured" | "deploy
   failed: "failed",
 };
 
+const RELEASE_PILL: Record<ReleaseStatus, "running" | "succeeded" | "failed" | "canceled"> = {
+  running: "running",
+  success: "succeeded",
+  failed: "failed",
+  cancelled: "canceled",
+};
+
+const KIND_TITLE = { database: "Database", backend: "Backend", frontend: "Frontend" } as const;
+
 export default function DeployProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const router = useRouter();
   const [project, setProject] = useState<DeployProject | null>(null);
   const [runs, setRuns] = useState<DeployRun[]>([]);
   const [components, setComponents] = useState<DeployComponent[]>([]);
+  const [releases, setReleases] = useState<Release[]>([]);
+  const [env, setEnv] = useState<EnvironmentView | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [projectItem, runItems, componentItems] = await Promise.all([
+      const [projectItem, runItems, componentItems, releaseItems, envView] = await Promise.all([
         getDeployProject(projectId),
         listDeployRuns(projectId),
         listComponents(projectId),
+        listReleases(projectId, 5).catch(() => [] as Release[]),
+        getEnvironment(projectId).catch(() => null),
       ]);
       setProject(projectItem);
       setRuns(runItems);
       setComponents(componentItems);
+      setReleases(releaseItems);
+      setEnv(envView);
       setError("");
     } catch (e) {
       setError((e as Error).message);
@@ -90,6 +112,32 @@ export default function DeployProjectPage() {
     }
   }
 
+  async function onDeployAll() {
+    setBusy(true);
+    setError("");
+    try {
+      await deployAll(projectId);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onCancelRelease(release: Release) {
+    if (!window.confirm(`Cancel release #${release.number}? Running deploys are cancelled; later steps never start.`)) return;
+    setBusy(true);
+    try {
+      await cancelRelease(release.id);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onRollback() {
     if (!window.confirm(`Roll back to ${project?.previousImageTag}?`)) return;
     setBusy(true);
@@ -119,6 +167,10 @@ export default function DeployProjectPage() {
   }
 
   const componentNames = new Map(components.map((c) => [c.id, c.name]));
+  const pendingEnv = new Set(env?.components.filter((c) => c.pendingRedeploy).map((c) => c.componentId) ?? []);
+  const providerComponents = components.filter((c) => c.provider !== "local_docker");
+  const latestRelease = releases[0] ?? null;
+  const releaseRunning = latestRelease?.status === "running";
   // Components a provider is serving, frontends first: what "Open site" links to.
   const liveSites = components.filter((c) => c.url && c.provider !== "local_docker" && c.kind !== "database");
   // "Open site" for a frontend, "Open api" for a backend; the name when two of a kind are live.
@@ -166,8 +218,32 @@ export default function DeployProjectPage() {
         description={`${project.repoFullName ?? "no repository"} · ${project.branch ?? "no branch"}`}
         actions={
           <>
-            <button className="button button-primary" type="button" onClick={() => void onDeploy()} disabled={busy}>
-              <Icon name="rocket" size={15} /> Deploy now
+            <Link className="button button-secondary" href={`/deploy/${projectId}/logs`}>
+              <Icon name="terminal" size={14} /> Logs
+            </Link>
+            {providerComponents.length > 0 ? (
+              <button
+                className="button button-primary"
+                type="button"
+                onClick={() => void onDeployAll()}
+                disabled={busy || releaseRunning}
+                title={
+                  releaseRunning
+                    ? `Release #${latestRelease!.number} is running`
+                    : "Database (Neon) → backend (Render) → frontend (Vercel), at the branch head"
+                }
+              >
+                <Icon name="rocket" size={15} /> Deploy all
+              </button>
+            ) : null}
+            <button
+              className={providerComponents.length > 0 ? "button button-secondary" : "button button-primary"}
+              type="button"
+              onClick={() => void onDeploy()}
+              disabled={busy}
+              title="Build and run the whole repository with local Docker"
+            >
+              <Icon name="rocket" size={15} /> {providerComponents.length > 0 ? "Docker build" : "Deploy now"}
             </button>
             {liveSites.map((component) => (
               <a
@@ -259,9 +335,25 @@ export default function DeployProjectPage() {
             <div className="review-row">
               <span>Environment</span>
               <strong>
-                {project.envKeys.length ? project.envKeys.join(", ") : "None"}
+                {project.envKeys.length ? `Shared: ${project.envKeys.join(", ")}` : "No shared variables"}
+                {env
+                  ? env.components
+                      .filter((c) => c.kind !== "database")
+                      .map((c) => (
+                        <span key={c.componentId}>
+                          <br />
+                          {c.name}: {c.vars.length} env var{c.vars.length === 1 ? "" : "s"}
+                          {c.receivesShared && project.envKeys.length ? " + shared" : ""}
+                        </span>
+                      ))
+                  : null}
                 <br />
-                <span className="tiny-label">Values are never sent to the browser.</span>
+                <span className="tiny-label">
+                  Values are never sent to the browser.{" "}
+                  <Link className="text-link" href={`/deploy/${projectId}/configure`}>
+                    Edit in Configure → Environment
+                  </Link>
+                </span>
               </strong>
             </div>
           </div>
@@ -349,7 +441,13 @@ export default function DeployProjectPage() {
             <tbody>
               {components.map((component) => (
                 <tr key={component.id}>
-                  <td className="primary-cell">{component.name}</td>
+                  <td className="primary-cell">
+                    {component.name}
+                    <br />
+                    <Link className="text-link" href={`/deploy/${projectId}/logs?c=${encodeURIComponent(component.id)}`}>
+                      Logs
+                    </Link>
+                  </td>
                   <td>{component.kind}</td>
                   <td>
                     <code className="commit-code">
@@ -358,12 +456,26 @@ export default function DeployProjectPage() {
                   </td>
                   <td>{PROVIDER_LABEL[component.provider]}</td>
                   <td>
-                    <StatusPill status={COMPONENT_PILL[component.status]} />
+                    {component.kind === "database" && component.status === "live" ? (
+                      <StatusPill status="connected" />
+                    ) : (
+                      <StatusPill status={COMPONENT_PILL[component.status]} />
+                    )}
+                    {pendingEnv.has(component.id) ? (
+                      <span
+                        className="status-pill status-amber"
+                        style={{ marginLeft: 6 }}
+                        title="Its env vars changed after its last successful deploy. Redeploy to apply them."
+                      >
+                        Env changed — redeploy to apply
+                      </span>
+                    ) : null}
                   </td>
                   <td>
                     {component.url ? (
                       <a className="text-link" href={component.url} target="_blank" rel="noreferrer">
-                        {component.url.replace(/^https?:\/\//, "")} <Icon name="external" size={11} />
+                        {component.kind === "database" ? "Open on Neon" : component.url.replace(/^https?:\/\//, "")}{" "}
+                        <Icon name="external" size={11} />
                       </a>
                     ) : (
                       "—"
@@ -378,13 +490,16 @@ export default function DeployProjectPage() {
                         disabled={busy || component.status === "deploying" || component.status === "draft"}
                         title={component.status === "draft" ? "Save it on the Configure screen first" : undefined}
                       >
-                        <Icon name="rocket" size={13} /> {component.url ? "Redeploy" : "Deploy"}
+                        <Icon name={component.kind === "database" ? "database" : "rocket"} size={13} />{" "}
+                        {component.kind === "database"
+                          ? component.url
+                            ? "Check"
+                            : "Provision"
+                          : component.url
+                            ? "Redeploy"
+                            : "Deploy"}
                       </button>
-                    ) : (
-                      <span className="tiny-label">
-                        {component.provider === "render" ? "Phase 7" : component.provider === "neon" ? "Phase 8" : ""}
-                      </span>
-                    )}
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -392,6 +507,68 @@ export default function DeployProjectPage() {
           </table>
         )}
       </div>
+
+      {latestRelease ? (
+        <>
+          <div className="section-heading">
+            <div>
+              <h2>Release #{latestRelease.number}</h2>
+              <p>
+                Deploy all at {latestRelease.commitSha.slice(0, 7)} on {latestRelease.branch}, {relativeTime(latestRelease.createdAt)}.
+                Each step starts once the one before is live.
+              </p>
+            </div>
+            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <StatusPill status={RELEASE_PILL[latestRelease.status]} />
+              {releaseRunning ? (
+                <button
+                  className="button button-danger"
+                  type="button"
+                  onClick={() => void onCancelRelease(latestRelease)}
+                  disabled={busy}
+                >
+                  <Icon name="x" size={13} /> Cancel
+                </button>
+              ) : null}
+            </span>
+          </div>
+          <div className="panel panel-pad">
+            <div className="review-list">
+              {latestRelease.steps.map((step, index) => (
+                <div className="review-row" key={step.componentId}>
+                  <span>
+                    {index + 1}. {KIND_TITLE[step.kind]} · {PROVIDER_LABEL[step.provider]}
+                  </span>
+                  <strong style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    {step.deployment ? (
+                      <Link href={`/deploy/builds/${step.deployment.id}`}>
+                        <StatusPill status={pillStatus(step.deployment.status)} />
+                      </Link>
+                    ) : (
+                      <StatusPill status="pending">
+                        {latestRelease.status === "running" ? "Waiting" : "Not deployed"}
+                      </StatusPill>
+                    )}
+                    <span>{step.componentName}</span>
+                    {step.deployment?.url ? (
+                      <a className="text-link" href={step.deployment.url} target="_blank" rel="noreferrer">
+                        {step.kind === "database" ? "Neon console" : step.deployment.url.replace(/^https?:\/\//, "")}{" "}
+                        <Icon name="external" size={11} />
+                      </a>
+                    ) : null}
+                  </strong>
+                </div>
+              ))}
+            </div>
+            {latestRelease.errorMessage && latestRelease.status !== "success" ? (
+              <div className="form-error" style={{ marginTop: 12 }}>
+                <Icon name="x" size={14} />
+                <span>{latestRelease.errorMessage}</span>
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
 
       <AnalysisPanel projectId={projectId} />
 

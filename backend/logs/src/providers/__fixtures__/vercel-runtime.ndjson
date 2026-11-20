@@ -1,0 +1,4 @@
+{"rowId":"r1","timestampInMs":"1762250000000","level":"info","message":"GET /api/hello","messageTruncated":"false","requestMethod":"GET","requestPath":"/api/hello","responseStatusCode":"200","source":"serverless","domain":"shop-web.vercel.app"}
+{"rowId":"r2","timestampInMs":1762250000100,"level":"info","message":"hello from the function\n","messageTruncated":false,"requestMethod":"GET","requestPath":"/api/hello","responseStatusCode":200,"source":"serverless","domain":"shop-web.vercel.app"}
+{"rowId":"r3","timestampInMs":1762250000200,"level":"error","message":"TypeError: cannot read properties of undefined","messageTruncated":true,"requestMethod":"GET","requestPath":"/api/broken","responseStatusCode":500,"source":"serverless","domain":"shop-web.vercel.app"}
+{"rowId":"r4","timestampInMs":1762250000300,"level":"info","message":"","source":"delimiter"}

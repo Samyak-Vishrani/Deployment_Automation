@@ -10,9 +10,14 @@ export default defineConfig([
     "node_modules/**",
     "coverage/**",
     "data/**",
-    // A separate service with its own toolchain.
+    // Separate services (and their shared library) with their own toolchains.
     "vercel_integration/**",
     "render_integration/**",
+    "neondb_integration/**",
+    "integration_common/**",
+    "logs/**",
+    // Superseded copies kept for review (renamed xxx_*), not code.
+    "**/xxx*",
     "next-env.d.ts",
   ]),
   {

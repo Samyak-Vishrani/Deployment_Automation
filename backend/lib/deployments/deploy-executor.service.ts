@@ -3,14 +3,13 @@ import type { Deployment, PrismaClient, Project } from "@prisma/client";
 import { removeDir } from "@/lib/common/fs-utils";
 import { CommandAbortedError, CommandFailedError, run } from "@/lib/common/spawn";
 import { MANAGED_LABEL, type DockerService } from "@/lib/docker/docker.service";
+import type { EnvVarsService } from "@/lib/env/env-vars.service";
 import type { EventsService } from "@/lib/events/events.service";
 import type { GithubAppService } from "@/lib/github/github-app.service";
 import { downloadSource } from "@/lib/github/source-archive";
-import {
-  resolveDataDir,
-  type DeploymentLogsService,
-  type DeploymentLogWriter,
-} from "./deployment-logs.service";
+import { resolveDataDir } from "@/lib/common/data-dir";
+import type { RemoteLogWriter as DeploymentLogWriter } from "@/lib/logs/remote-log-writer";
+import type { RemoteLogs } from "@/lib/logs/remote-logs";
 import type { QueueJob } from "./deployment-queue";
 
 const BUILD_TIMEOUT_MS = 30 * 60 * 1000;
@@ -29,8 +28,11 @@ export class DeployExecutor {
     private readonly prisma: PrismaClient,
     private readonly github: GithubAppService,
     private readonly docker: DockerService,
-    private readonly logs: DeploymentLogsService,
+    /** Phase 12: build logs go to the logs service (backend/logs). */
+    private readonly logs: Pick<RemoteLogs, "open">,
     private readonly events: EventsService,
+    /** Phase 9: the shared env vars, sealed in EnvVar. */
+    private readonly envVars?: Pick<EnvVarsService, "resolve">,
   ) {}
 
   async run(job: QueueJob, signal: AbortSignal): Promise<void> {
@@ -49,7 +51,19 @@ export class DeployExecutor {
     const containerName = `orbitops-${slug}`;
     const imagePrefix = `orbitops-${slug}`;
 
-    const writer = await this.logs.open(project.id, deployment.id);
+    // Runtime env only (never --build-arg: build args end up in `docker history`).
+    // A local Docker deploy is the whole project, so it gets the shared set.
+    const resolved = this.envVars ? await this.envVars.resolve(project.id, null) : null;
+    const env: Record<string, string> = resolved
+      ? Object.fromEntries(resolved.vars.map((v) => [v.key, v.value]))
+      : ((project.envVars as Record<string, string>) ?? {});
+    // Docker's own output is "docker"; our narrative lines say "orbitops".
+    const writer = this.logs.open(project.id, deployment.id, {
+      secrets: resolved?.secrets ?? [],
+      provider: "local_docker",
+      componentId: null,
+      defaultSource: "docker",
+    });
 
     await this.prisma.deployment.update({
       where: { id: deployment.id },
@@ -99,7 +113,7 @@ export class DeployExecutor {
         image: imageTag,
         containerPort: project.containerPort,
         hostPort,
-        env: (project.envVars as Record<string, string>) ?? {},
+        env,
         projectId: project.id,
         deploymentId: deployment.id,
       });
@@ -110,7 +124,7 @@ export class DeployExecutor {
         const tail = await this.docker.containerLogs(containerName);
         if (tail) {
           writer.section("Container output");
-          for (const line of tail.split("\n")) writer.write(line);
+          for (const line of tail.split("\n")) writer.write(line, { source: "docker", phase: "deploy" });
         }
         throw new Error(`Container failed to start: ${health.reason}`);
       }
@@ -141,6 +155,7 @@ export class DeployExecutor {
         error,
         previousImage,
         imageTag,
+        env,
       );
     } finally {
       await removeDir(workDir).catch((e) =>
@@ -179,7 +194,7 @@ export class DeployExecutor {
     writer.addSecret(token);
 
     await downloadSource(this.github, repo, ref, installationId, workDir);
-    writer.write(`Source for ${repo.fullName}@${ref.slice(0, 12)} extracted.`);
+    writer.write(`Source for ${repo.fullName}@${ref.slice(0, 12)} extracted.`, { source: "orbitops", phase: "setup", stream: "info" });
 
     // ------------------------------------------------------------- build ----
     this.throwIfAborted(signal);
@@ -207,7 +222,7 @@ export class DeployExecutor {
         "--progress", "plain",
         contextDir,
       ],
-      { onLine: (line) => writer.write(line), signal, timeoutMs: BUILD_TIMEOUT_MS },
+      { onLine: (line) => writer.write(line, { source: "docker", phase: "build" }), signal, timeoutMs: BUILD_TIMEOUT_MS },
     );
 
     return imageTag;
@@ -221,6 +236,7 @@ export class DeployExecutor {
     error: unknown,
     previousImage: string | undefined,
     imageTag: string | undefined,
+    env: Record<string, string>,
   ): Promise<void> {
     const cancelled = error instanceof CommandAbortedError;
     const message = cancelled
@@ -240,16 +256,16 @@ export class DeployExecutor {
           image: previousImage,
           containerPort: project.containerPort,
           hostPort: project.hostPort!,
-          env: (project.envVars as Record<string, string>) ?? {},
+          env,
           projectId: project.id,
           deploymentId: deployment.id,
         });
-        writer.write(`Rolled back. http://localhost:${project.hostPort}`);
+        writer.write(`Rolled back. http://localhost:${project.hostPort}`, { source: "orbitops", phase: "deploy", stream: "info" });
       } catch (rollbackError) {
-        writer.write(`Rollback failed: ${(rollbackError as Error).message}`);
+        writer.write(`Rollback failed: ${(rollbackError as Error).message}`, { source: "orbitops", phase: "deploy", stream: "stderr" });
       }
     } else if (!cancelled && !previousImage) {
-      writer.write("No previous image to roll back to; the port is left free.");
+      writer.write("No previous image to roll back to; the port is left free.", { source: "orbitops", phase: "deploy", stream: "info" });
     }
 
     await this.finish(deployment, writer, cancelled ? "cancelled" : "failed", imageTag, message);

@@ -1,5 +1,5 @@
-import { badRequest } from "../http/provider-error";
-import type { DeployRequest } from "../types";
+import { badRequest } from "@orbitops/integration-common/provider-error";
+import type { DeployRequest, UserEnvVar } from "../types";
 import type { EnvVarInput } from "../vercel/vercel.provider";
 
 /**
@@ -65,6 +65,13 @@ export function parseDeployRequest(raw: unknown): DeployRequest {
     throw badRequest("commitSha must be a full 40-character commit SHA.");
   }
 
+  const publicEnvVars =
+    body.publicEnvVars !== undefined && body.publicEnvVars !== null ? parsePublicEnvVars(body.publicEnvVars) : undefined;
+  const envVars =
+    body.envVars !== undefined && body.envVars !== null
+      ? parseUserEnvVars(body.envVars, new Set((publicEnvVars ?? []).map((v) => v.key)))
+      : undefined;
+
   const githubToken = body.githubToken;
   if (githubToken !== undefined && githubToken !== null && (typeof githubToken !== "string" || githubToken.length > 500)) {
     throw badRequest("githubToken must be a string.");
@@ -86,7 +93,85 @@ export function parseDeployRequest(raw: unknown): DeployRequest {
     repo: { fullName, repoId, branch: str(repo, "branch", "repo", 255) },
     commitSha: commitSha.toLowerCase(),
     githubToken: (githubToken as string | null | undefined) || undefined,
+    ...(publicEnvVars ? { publicEnvVars } : {}),
+    ...(envVars ? { envVars } : {}),
   };
+}
+
+const USER_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_USER_VARS = 100;
+const MAX_VALUE_BYTES = 32 * 1024;
+/** Vercel's runtime reserves these (docs, 2026-11-03); VERCEL_* are its system variables. */
+const VERCEL_RESERVED = new Set([
+  "AWS_SECRET_KEY",
+  "AWS_EXECUTION_ENV",
+  "AWS_LAMBDA_LOG_GROUP_NAME",
+  "AWS_LAMBDA_LOG_STREAM_NAME",
+  "AWS_LAMBDA_FUNCTION_NAME",
+  "AWS_LAMBDA_FUNCTION_MEMORY_SIZE",
+  "AWS_LAMBDA_FUNCTION_VERSION",
+  "NOW_REGION",
+  "TZ",
+  "LAMBDA_TASK_ROOT",
+  "LAMBDA_RUNTIME_DIR",
+]);
+
+/**
+ * The user's env vars (Phase 9). The main backend validated them already; this
+ * is the contract check. Messages name the key, never the value.
+ */
+export function parseUserEnvVars(raw: unknown, publicKeys: ReadonlySet<string> = new Set()): UserEnvVar[] {
+  if (!Array.isArray(raw)) throw badRequest("envVars must be an array.");
+  if (raw.length > MAX_USER_VARS) throw badRequest(`envVars holds more than ${MAX_USER_VARS} variables.`);
+  const seen = new Set<string>();
+  return raw.map((item, index) => {
+    const v = obj(item, `envVars[${index}]`);
+    const key = typeof v.key === "string" ? v.key : "";
+    if (!USER_KEY.test(key) || key.length > 255) throw badRequest(`envVars[${index}].key must be a variable name.`);
+    const upper = key.toUpperCase();
+    if (VERCEL_RESERVED.has(upper) || upper.startsWith("VERCEL_")) {
+      throw badRequest(`envVars[${index}] (${key}) is reserved by Vercel.`);
+    }
+    if (seen.has(key)) throw badRequest(`envVars sets ${key} twice.`);
+    seen.add(key);
+    if (publicKeys.has(key)) throw badRequest(`envVars and publicEnvVars both set ${key}.`);
+    if (typeof v.value !== "string" || Buffer.byteLength(v.value, "utf8") > MAX_VALUE_BYTES) {
+      throw badRequest(`envVars[${index}] (${key}) needs a string value of at most 32 KB.`);
+    }
+    if (typeof v.secret !== "boolean") throw badRequest(`envVars[${index}] (${key}).secret must be true or false.`);
+    return { key, value: v.value, secret: v.secret };
+  });
+}
+
+const PUBLIC_KEY = /^[A-Z_][A-Z0-9_]*$/;
+/** A guard, not a policy: these are stored and logged, so nothing secret-looking may come this way. */
+const SECRET_LOOKING = /SECRET|TOKEN|KEY|PASSWORD|PASSWD|PRIVATE|CREDENTIAL/;
+
+/**
+ * Public env vars (the backend's URL for the frontend). Values are visible in
+ * the browser bundle anyway, so they are stored with the request and may be
+ * logged; anything that looks like a secret is refused.
+ */
+export function parsePublicEnvVars(raw: unknown): Array<{ key: string; value: string }> {
+  if (!Array.isArray(raw)) throw badRequest("publicEnvVars must be an array.");
+  if (raw.length > 20) throw badRequest("publicEnvVars holds more than 20 variables.");
+  const seen = new Set<string>();
+  return raw.map((item, index) => {
+    const v = obj(item, `publicEnvVars[${index}]`);
+    const key = typeof v.key === "string" ? v.key : "";
+    if (!PUBLIC_KEY.test(key) || key.length > 128) {
+      throw badRequest(`publicEnvVars[${index}].key must be an upper-case variable name.`);
+    }
+    if (SECRET_LOOKING.test(key)) {
+      throw badRequest(`publicEnvVars[${index}] (${key}) looks like a secret; only public values may be sent here.`);
+    }
+    if (seen.has(key)) throw badRequest(`publicEnvVars sets ${key} twice.`);
+    seen.add(key);
+    if (typeof v.value !== "string" || v.value.length > 2048 || /[\r\n]/.test(v.value)) {
+      throw badRequest(`publicEnvVars[${index}] (${key}) needs a single-line string value.`);
+    }
+    return { key, value: v.value };
+  });
 }
 
 export function parseEnvVars(raw: unknown): EnvVarInput[] {

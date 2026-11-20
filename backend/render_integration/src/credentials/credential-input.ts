@@ -1,4 +1,4 @@
-import { badRequest } from "../http/provider-error";
+import { badRequest } from "@orbitops/integration-common/provider-error";
 import { PLANS, REGIONS } from "../render/service-settings";
 
 /**

@@ -13,7 +13,13 @@ import { GithubError, type GithubAppService } from "@/lib/github/github-app.serv
 import { getFileContent, getRepositoryTree, GitHubApiError } from "@/lib/github/github.service";
 import type { ParsedRepo } from "@/lib/github/repo-url";
 import { assertValidUpdate, type ComponentInput, type UpdateComponentInput } from "./component-input";
-import { runPreflight, type CredentialState, type PreflightDeps, type PreflightResult } from "./preflight";
+import {
+  runPreflight,
+  type ComponentEnvKeys,
+  type CredentialState,
+  type PreflightDeps,
+  type PreflightResult,
+} from "./preflight";
 import { PROVIDER_FOR_KIND } from "./provider-rules";
 
 /**
@@ -41,7 +47,11 @@ export type ComponentProposal = {
 /** Asks for the state of the user's account with a provider (Vercel: via the integration service). */
 export type CredentialLookup = (userId: string, provider: ProviderId) => Promise<CredentialState>;
 
+/** Per component, its stored env var names and those with a value (EnvVarsService.keysFor). */
+export type EnvKeysLookup = (projectId: string) => Promise<(component: { id: string; kind: ComponentKind }) => ComponentEnvKeys>;
+
 const notConnected: CredentialLookup = async () => "missing";
+const noEnv: EnvKeysLookup = async () => () => ({ keys: [], filled: new Set() });
 
 const ORDER = [{ kind: "asc" }, { rootDir: "asc" }] satisfies Prisma.ComponentOrderByWithRelationInput[];
 
@@ -54,6 +64,7 @@ export class ComponentsService {
     private readonly analysis: AnalysisService,
     private readonly events: EventsService,
     private readonly credentialState: CredentialLookup = notConnected,
+    private readonly envKeys: EnvKeysLookup = noEnv,
   ) {}
 
   async list(userId: string, projectId: string): Promise<Component[]> {
@@ -167,10 +178,7 @@ export class ComponentsService {
     const project = await this.getOrThrow(userId, projectId);
     const components = await this.prisma.component.findMany({ where: { projectId }, orderBy: ORDER });
 
-    const envVars = (project.envVars ?? {}) as Record<string, unknown>;
-    const filledEnvKeys = Object.entries(envVars)
-      .filter(([, value]) => typeof value === "string" && value.trim() !== "")
-      .map(([key]) => key);
+    const envFor = await this.envKeys(projectId);
 
     // Opened at most once, and only if a check needs the repository.
     let opened: Promise<{ fullName: string; sha: string; token: string }> | undefined;
@@ -193,7 +201,21 @@ export class ComponentsService {
       credentialState: this.credentialState,
     };
 
-    return runPreflight({ userId, filledEnvKeys }, components, deps);
+    return runPreflight({ userId, envFor }, components, deps);
+  }
+
+  /**
+   * A file at the project's branch head, or null when it does not exist. Used
+   * for "Add from .env.example" (EnvVarsService.suggestions).
+   */
+  async readRepoFile(project: Project, path: string): Promise<string | null> {
+    try {
+      const { fullName, sha, token } = await this.openRepo(project);
+      return await getFileContent(fullName, path, sha, token);
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return null;
+      throw readableGithubError(error);
+    }
   }
 
   // ------------------------------------------------------------- internals --

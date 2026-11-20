@@ -5,8 +5,17 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
-    // The integration services are separate services with their own vitest configs.
-    exclude: ["**/node_modules/**", "vercel_integration/**", "render_integration/**"],
+    // The integration services (and their shared library) have their own vitest configs.
+    exclude: [
+      "**/node_modules/**",
+      "vercel_integration/**",
+      "render_integration/**",
+      "neondb_integration/**",
+      "integration_common/**",
+      "logs/**",
+      // Files renamed xxx_* are superseded copies kept for review, not code.
+      "**/xxx*",
+    ],
   },
   resolve: {
     alias: {

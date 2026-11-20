@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { ProviderError } from "../http/provider-error";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import { expectOk, vercelRequest, type VercelContext } from "./vercel-http";
 
 /**

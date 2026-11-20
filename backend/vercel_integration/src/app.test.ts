@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildApp, type AppDeps } from "./app";
-import { ProviderError } from "./http/provider-error";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 
 const SECRET = "x".repeat(40);
 

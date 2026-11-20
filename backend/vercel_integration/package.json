@@ -16,9 +16,11 @@
     "spike": "tsx scripts/vercel-spike.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy"
+    "prisma:deploy": "prisma migrate deploy",
+    "spike:runtime": "tsx scripts/runtime-logs-spike.ts"
   },
   "dependencies": {
+    "@orbitops/integration-common": "file:../integration_common",
     "@prisma/client": "^5.22.0",
     "dotenv": "^16.4.5",
     "fastify": "^5.2.0",

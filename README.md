@@ -3,7 +3,9 @@
 A developer connects a GitHub repository; a push to its branch builds a Docker image and replaces
 the running container, with the build log streamed live to the dashboard. From Phase 6, a
 frontend component can instead be deployed to the user's own Vercel account, and from Phase 7 a
-backend component to the user's own Render account.
+backend component to the user's own Render account. From Phase 8 a database component is provisioned
+as Postgres in the user's own Neon account, and **Deploy all** ships the whole project in order:
+database → backend (with `DATABASE_URL`) → frontend (with the backend's URL).
 
 ## Architecture
 
@@ -25,6 +27,16 @@ Backend :3001  ⇄  Vercel integration :3002   backend/vercel_integration — it
 Backend :3001  ⇄  Render integration :3003   backend/render_integration — its own service
                     ↓                          (Fastify + Prisma, Postgres schema "render")
                   Render REST API             web services, env vars, deploys, status, logs
+
+Backend :3001  →  Neon DB integration :3004  backend/neondb_integration — its own service
+                    ↓                          (Fastify + Prisma, Postgres schema "neon"; synchronous)
+                  Neon REST API               projects, operations, connection strings
+
+Backend :3001  ⇄  Logs :3005                 backend/logs — its own service (Fastify, files, no database)
+                    ↓                          build logs (JSONL per deployment) + live runtime tails
+                  /log-proxy on :3002 / :3003  read-only routes that add the provider token (Phase 12)
+
+backend/integration_common                    shared plumbing the services import (no process)
 ```
 
 GitHub delivers pushes to a single App-level webhook at `POST /api/webhooks/github`.
@@ -41,6 +53,17 @@ The Render integration works the same way with its **own** secrets: the backend 
 `x-orbitops-provider: render`, so neither service can report on the other's deployments. See
 `backend/render_integration/README.md`.
 
+The Neon DB integration has its own `NEON_SERVICE_TOKEN` and sends nothing back: provisioning is
+synchronous (seconds), so the backend just waits for `POST /databases`. It never stores a
+connection string. The backend asks for one when it deploys the backend to Render, keeps it in
+memory for that one request, and Render receives it as `DATABASE_URL`. See
+`backend/neondb_integration/README.md`.
+
+The plumbing all three services need (the internal-token check, secret-box, redaction, the
+retrying fetch, provider errors, the callback client, outbox and deploy queue) lives once in
+`backend/integration_common`. Each service links it with `npm install` (`file:../integration_common`).
+See `backend/integration_common/README.md`.
+
 ## Backend layout
 
 ```text
@@ -54,8 +77,10 @@ backend/
     projects/[id]/analysis      latest analysis snapshot  ← phase 4
     repositories/               the user's repos and branches, read live from GitHub  ← phase 3
     auth/github/                sign-in through the GitHub App; also where installs land
-    projects/[id]/components/   configure components; [cid]/deploy deploys one to its provider  ← phase 5/6/7
-    providers/                  connect / disconnect Vercel and Render accounts (proxied to their services)  ← phase 6/7
+    projects/[id]/components/   configure components; [cid]/deploy deploys one to its provider  ← phase 5/6/7/8
+    projects/[id]/releases      "Deploy all": database → backend → frontend as one release  ← phase 8
+    releases/[id]/              a release with its steps; cancel  ← phase 8
+    providers/                  connect / disconnect Vercel, Render and Neon accounts (proxied to their services)  ← phase 6/7/8
     internal/provider-events    signed deploy events from the integration services (secret per provider)  ← phase 6/7
   lib/
     github/github-app.service   App JWT → installation token, repo metadata, branch SHA, source tarball
@@ -69,7 +94,8 @@ backend/
     projects/                   port allocator, validation
     analysis/                   framework detection, build settings, database hints  ← phase 4
     components/                 component config, provider rules, pre-flight  ← phase 5
-    providers/                  integration-service clients (Vercel, Render), provider deploys, callbacks  ← phase 6/7
+    providers/                  integration-service clients (Vercel, Render, Neon), provider deploys, env injection, callbacks  ← phase 6/7/8
+    releases/                   the Deploy-all orchestrator: stages, resume after restart  ← phase 8
     runtime.ts                  process-wide service graph + startup reconciliation
 ```
 
@@ -125,6 +151,28 @@ npx prisma migrate deploy  # creates the "render" schema
 npm run dev              # :3003
 ```
 
+Terminal 5 (Neon databases, Phase 8):
+
+```bash
+cd backend/neondb_integration
+cp .env.example .env     # then fill in the secrets, see "Neon setup"
+npm install
+npx prisma migrate deploy  # creates the "neon" schema
+npm run dev              # :3004
+```
+
+Terminal 6 (logs, Phase 12):
+
+```bash
+cd backend/logs
+cp .env.example .env     # then fill in the two tokens, see "Logs"
+npm install
+npm run dev              # :3005
+```
+
+`backend/integration_common` is not started: `npm install` in each service links it. Run
+`npm install` there too if you want to run its own tests.
+
 ## GitHub App setup
 
 One GitHub App does both jobs. The push pipeline authenticates as an *installation*, so a
@@ -175,7 +223,7 @@ The Vercel token is a credential, as are both shared secrets: keep them out of g
 ignored in both folders).
 
 To check how the real Vercel API answers for your account (step 0 of
-`Plans/Plans_Remaining/PLAN_PHASE_6.md`), run `npm run spike` in `backend/vercel_integration`. The
+`Plans/Plans_Executed/PLAN_PHASE_6.md`), run `npm run spike` in `backend/vercel_integration`. The
 required variables are at the bottom of its `.env.example`. It creates one throwaway project and
 deletes it at the end.
 
@@ -211,18 +259,179 @@ in `backend/render_integration`; the backend reaches it on `127.0.0.1:3003`.
 The Render API key is a credential, as are both shared secrets: keep them out of git.
 
 To check how the real Render API answers for your account (step 0 of
-`Plans/Plans_Remaining/PLAN_PHASE_7.md`), run `npm run spike` in `backend/render_integration`. The
+`Plans/Plans_Executed/PLAN_PHASE_7.md`), run `npm run spike` in `backend/render_integration`. The
 required variables are at the bottom of its `.env.example`. It creates one throwaway free service
 and deletes it at the end.
+
+## Neon setup
+
+Database components are provisioned as Postgres in the user's own Neon account. The Neon code is a
+separate service in `backend/neondb_integration`; the backend reaches it on `127.0.0.1:3004`.
+
+1. Generate one **new** shared token and put the same value in `backend/.env` and
+   `backend/neondb_integration/.env` as `NEON_SERVICE_TOKEN`. There is no callback secret: this
+   service never calls the backend.
+2. Set `ENCRYPTION_KEY` in `backend/neondb_integration/.env`, a key different from every other one.
+   It seals the users' Neon API keys.
+3. Run `npx prisma migrate deploy` in `backend`, which adds the `Release` table and
+   `Deployment.releaseId`, and in `backend/neondb_integration`, which creates the `neon` schema.
+   Start the service (Terminal 5).
+4. In the dashboard, go to **Settings → Integrations**. Paste a Neon API key (create one at
+   <https://console.neon.tech/app/settings/api-keys>), then pick:
+   - the organization (if the key sees several);
+   - the region: Oregon, `aws-us-west-2`, by default, next to Render's default region;
+   - the Postgres version.
+5. On a project's **Configure** page, tick **Add database (Neon)** (analysis adds it when it sees
+   Postgres) and save. **Provision on Neon** creates the database. Any later backend deploy gets
+   two env vars:
+   - `DATABASE_URL`: pooled, for the application;
+   - `DATABASE_URL_UNPOOLED`: direct, for migrations.
+
+   They override the project's own values of the same name. They are never stored by OrbitOps and
+   never logged.
+6. **Migrations are not run for you.** Add one to the backend's build command, e.g.
+   `npm install && npx prisma migrate deploy`. With Prisma, point the direct URL at the unpooled
+   variable:
+
+   ```prisma
+   datasource db {
+     provider  = "postgresql"
+     url       = env("DATABASE_URL")
+     directUrl = env("DATABASE_URL_UNPOOLED")
+   }
+   ```
+7. Neon's free plan limits the number of projects, and free computes pause when idle: the first
+   query after a pause takes a moment.
+
+To check how the real Neon API answers for your account (step 0 of
+`Plans/Plans_Remaining/PLAN_PHASE_8.md`), run `NEON_API_KEY=... npm run spike` in
+`backend/neondb_integration`. It creates one throwaway project and deletes it at the end.
+
+## Deploy all
+
+Once every pre-flight check passes, **Configure** and the project page show **Deploy all**. One
+click creates a **Release**, pinned to the branch head's commit, and runs it in three steps. Each
+step starts only when every deployment of the one before is live:
+
+1. **Database:** the Neon project is provisioned, or found if it already exists.
+2. **Backend:** deployed to Render with `DATABASE_URL` and `DATABASE_URL_UNPOOLED`.
+3. **Frontend:** deployed to Vercel. The backend's `*.onrender.com` URL is first set on the Vercel
+   project, under the key the framework exposes to browser code:
+   - Next.js: `NEXT_PUBLIC_API_URL`;
+   - Vite, Vue and React with Vite: `VITE_API_URL`;
+   - Nuxt: `NUXT_PUBLIC_API_URL`;
+   - Astro and SvelteKit: `PUBLIC_API_URL`;
+   - Create React App: `REACT_APP_API_URL`;
+   - anything else: `API_URL`.
+
+   This happens only with exactly one backend.
+
+A failed or cancelled step ends the release, and later steps never start. The release is shown on
+the project page with a link to each step's log. If the backend restarts mid-release, the release
+carries on. Pushes still redeploy single components, and they get the same env vars.
+
+## Environment variables
+
+Since Phase 9, env vars live in the `EnvVar` table, and every value is encrypted with
+`ENCRYPTION_KEY` (AES-256-GCM, `lib/crypto/secret-box.ts`). Edit them on **Configure**:
+- each frontend and backend card has an **Environment** section;
+- the **Shared env vars** panel goes to every backend and to local Docker deploys.
+
+A component's own variable beats a shared one with the same name.
+
+| Component | Receives |
+| --- | --- |
+| Render backend | shared + its own, as plain Render env vars, plus Neon's `DATABASE_URL` / `DATABASE_URL_UNPOOLED` |
+| Vercel frontend | its own only: secrets as **Sensitive** (write-only) vars, the rest as **Encrypted**, for production and preview; plus the backend's URL |
+| Local Docker deploy | shared, as runtime env of the container (never `--build-arg`) |
+| Neon database | nothing: its connection string goes to the backend |
+
+- **Secret or not.** New rows are secrets by default. Pasting a `.env` or **Add from
+  .env.example** guesses from the name (`SECRET`, `TOKEN`, `KEY`, `PASSWORD`, `DATABASE_URL`…).
+  - A secret is write-only: it can be replaced, never shown again.
+  - A non-secret can be shown with **Show**.
+  - Turning a secret into a non-secret needs the value entered again.
+  - On a frontend, `NEXT_PUBLIC_*`, `VITE_*`, `REACT_APP_*`, `PUBLIC_*` and `NUXT_PUBLIC_*` cannot be
+    secrets, because the framework puts them in browser code.
+- **System variables** are shown read-only and never stored:
+  - `DATABASE_URL` / `DATABASE_URL_UNPOOLED` from Neon replace a value of the same name;
+  - for the backend's URL (e.g. `NEXT_PUBLIC_API_URL`), **your** value wins. That is how a project
+    with several backends sets it.
+- **Changes apply on the next deploy.** Saving only stores them. A deployed component then shows
+  **Env changed — redeploy to apply**, with **Save & redeploy** in the editor.
+- **Limits:**
+  - names are letters, digits and `_`;
+  - values are up to 32 KB each, and may be multi-line;
+  - at most 100 per component;
+  - 64 KB in total on Vercel.
+- **Keys the provider sets itself are refused:** `VERCEL_*` and the AWS runtime names on Vercel,
+  and `RENDER` / `RENDER_*` on Render.
+- **Values never appear** in an API response other than **Show**, in a log line, or in an error.
+- **Upgrading from Phase 8:** on its first start, the backend moves each project's old
+  `Project.envVars` into shared rows, as secrets. The old column is then left empty.
+
+To give the backend the frontend's URL (e.g. for CORS), add it yourself as a backend variable, such
+as `CORS_ORIGIN=https://<project>.vercel.app`.
+
+## Logs
+
+All log code lives in one service, `backend/logs` (:3005). Every view shows **one** component
+(or one deployment) at a time: Vercel's and Render's logs are never mixed. The combined,
+time-ordered log is left for the AI assistant (Phase 13), which reads each deployment's entries
+from this service.
+
+| View | Where | Stored? |
+| --- | --- | --- |
+| **Build** | the build page, and **Logs → \<component\> → Build** with a deployment picker | Yes: `backend/logs/data/<projectId>/<deploymentId>.jsonl` |
+| **Runtime** | **Logs → \<component\> → Runtime** | No: tailed live only while you watch |
+
+**Build logs**
+- Each line records its **source** (`orbitops` for our own steps, `vercel`, `render`, `neon` or
+  `docker`), its phase, stdout/stderr and time.
+- The viewer has source chips, **Errors only** (errors are tinted, counted and reachable with
+  ↑/↓), search, wrap, **Copy** and **Download**.
+- A reconnect resumes from the last line (`Last-Event-ID`), with no gaps and no repeats.
+- Logs from before Phase 12 (`backend/data/logs/**/*.log`) are still read.
+- **If the logs service is down, deploys still work:** the backend buffers up to 5000 lines per
+  deployment and delivers them when it is back.
+
+**Runtime logs** come from a different place per provider:
+- **Render:** app logs, plus request lines if asked, through `render_integration`'s log proxy.
+  Render's API allows **30 log reads a minute**, so it is read every 3 s, newest 100 lines first,
+  and slows down when the quota runs low.
+- **Vercel:** the runtime-logs stream of the live deployment, through `vercel_integration`'s proxy.
+  Vercel only sends something when a server function or middleware runs; a site of static pages
+  logs nothing at runtime.
+- **Neon:** has no runtime log API; the tab says so.
+- **Local Docker:** `docker logs --follow` of `orbitops-<slug>`.
+
+Runtime limits: at most 3 open streams per user. A stream ends after 15 minutes without a viewer
+(the page pings while visible) or 60 minutes in total, and then shows **Resume**.
+
+**Redaction**
+- Build lines are redacted by the backend before they are sent; runtime lines are redacted with
+  the component's secret env values.
+- The logs service redacts known token shapes again.
+- Provider tokens never reach the logs service: the integration services' `/log-proxy` routes
+  add them, and accept only `LOGS_PROXY_TOKEN`, which opens nothing else.
+
+**Setup**
+1. Generate two **new** tokens. Put `LOGS_SERVICE_TOKEN` in `backend/.env` and
+   `backend/logs/.env`. Put `LOGS_PROXY_TOKEN` in `backend/logs/.env`,
+   `backend/vercel_integration/.env` and `backend/render_integration/.env`.
+2. Start Terminal 6, and restart the Vercel and Render services so they read `LOGS_PROXY_TOKEN`.
 
 ## Tests
 
 ```bash
-cd backend  && npm test        # 301 unit tests (analysis, detection, components, pre-flight, push filter, GitHub, auth, provider deploys)
+cd backend  && npm test        # 382 unit tests (analysis, detection, components, pre-flight, push filter, GitHub, auth, provider deploys, releases, env vars, logs seam)
 cd backend  && npm run test:e2e  # drives the real webhook route against a running backend
 cd frontend && npm test
 cd backend/vercel_integration && npm test   # Vercel provider, upload, credentials, outbox, runner, API
-cd backend/render_integration && npm test   # Render provider, env sync, credentials, outbox, runner, API
+cd backend/render_integration && npm test   # Render provider, env sync, credentials, outbox adapter, runner, API
+cd backend/neondb_integration && npm test   # Neon provider, provisioning, credentials, API
+cd backend/integration_common && npm test   # shared plumbing: secret-box, outbox, queue, fetch, callbacks, env vault + hash, ndjson
+cd backend/logs && npm test                 # log store, ingest + stream routes, Render/Vercel/Docker tailers, sessions
 ```
 
 The e2e script signs real HMAC payloads and asserts on the resulting database rows, so it covers
@@ -251,6 +460,10 @@ Backend (`backend/.env`):
 | `RENDER_SERVICE_URL` | the Render integration service; default `http://127.0.0.1:3003` |
 | `RENDER_SERVICE_TOKEN` | shared with the Render service only; sent on every call to it |
 | `RENDER_CALLBACK_SECRET` | shared with the Render service only; verifies its deploy events |
+| `NEON_SERVICE_URL` | the Neon DB integration service; default `http://127.0.0.1:3004` |
+| `NEON_SERVICE_TOKEN` | shared with the Neon service only; sent on every call to it |
+| `LOGS_SERVICE_URL` | the logs service; default `http://127.0.0.1:3005` |
+| `LOGS_SERVICE_TOKEN` | shared with the logs service only; sent on every call to it |
 
 Vercel integration (`backend/vercel_integration/.env`):
 
@@ -273,6 +486,31 @@ Render integration (`backend/render_integration/.env`):
 | `MAIN_API_URL` | the backend, for event callbacks; default `http://localhost:3001` |
 | `HOST` / `PORT` | default `127.0.0.1:3003`; keep it on loopback |
 | `DEPLOY_CONCURRENCY`, `RENDER_POLL_INTERVAL_MS`, `RENDER_DEPLOY_TIMEOUT_MIN` | optional tuning (8, 3000, 45) |
+
+Neon DB integration (`backend/neondb_integration/.env`):
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | the same Postgres, with `?schema=neon` |
+| `ENCRYPTION_KEY` | 32 bytes, base64; seals Neon API keys; required in production; a key of its own |
+| `NEON_SERVICE_TOKEN` | the same value as in `backend/.env` |
+| `HOST` / `PORT` | default `127.0.0.1:3004`; keep it on loopback |
+| `NEON_PROVISION_TIMEOUT_MS`, `DEFAULT_REGION`, `DEFAULT_PG_VERSION` | optional (60000, `aws-us-west-2`, 17) |
+
+Logs (`backend/logs/.env`):
+
+| Variable | Purpose |
+| --- | --- |
+| `LOGS_SERVICE_TOKEN` | the same value as in `backend/.env` |
+| `LOGS_PROXY_TOKEN` | the same value as in `vercel_integration/.env` and `render_integration/.env`; must differ from every internal token |
+| `VERCEL_SERVICE_URL`, `RENDER_SERVICE_URL` | the integration services (`http://127.0.0.1:3002`, `:3003`) |
+| `DATA_DIR` | where build logs are written (default `./data`) |
+| `LEGACY_LOG_DIR` | pre-Phase-12 logs, read only (default `../data/logs`) |
+| `HOST` / `PORT` | default `127.0.0.1:3005`; keep it on loopback |
+| `MAX_LOG_BYTES`, `RUNTIME_STREAM_MAX_MS`, `RUNTIME_IDLE_MS`, `RENDER_RUNTIME_POLL_MS`, `MAX_STREAMS_PER_USER` | optional (20 MB, 60 min, 15 min, 3000, 3) |
+
+`vercel_integration/.env` and `render_integration/.env` also take `LOGS_PROXY_TOKEN`. Leaving it
+unset turns their `/log-proxy` routes off, and runtime logs then answer 503.
 
 Frontend (`frontend/.env`):
 

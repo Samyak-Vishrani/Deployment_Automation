@@ -10,5 +10,7 @@ export default defineConfig([
     "node_modules/**",
     "coverage/**",
     "next-env.d.ts",
+    // Superseded copies kept for review (renamed xxx_*), not code.
+    "**/xxx*",
   ]),
 ]);

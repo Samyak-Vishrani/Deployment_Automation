@@ -22,8 +22,8 @@ const descriptions: Record<string, string> = {
   Security: "Authentication and access boundaries for this workspace.",
 };
 
-const CONNECTABLE: ConnectableProvider[] = ["vercel", "render"];
-const LABELS: Record<ConnectableProvider, string> = { vercel: "Vercel", render: "Render" };
+const CONNECTABLE: ConnectableProvider[] = ["vercel", "render", "neon"];
+const LABELS: Record<ConnectableProvider, string> = { vercel: "Vercel", render: "Render", neon: "Neon" };
 const missing = (provider: ConnectableProvider): ProviderCredential => ({ provider, state: "missing" });
 
 export default function SettingsPage() {
@@ -153,18 +153,11 @@ export default function SettingsPage() {
                 ) : (
                   <div className="setting-line">
                     <span className="setting-line-copy">
-                      <strong>Vercel and Render</strong>
+                      <strong>Vercel, Render and Neon</strong>
                       <small>Checking…</small>
                     </span>
                   </div>
                 )}
-                <div className="setting-line">
-                  <span className="setting-line-copy">
-                    <strong>Neon</strong>
-                    <small>Postgres for the database component. Arrives in Phase 8.</small>
-                  </span>
-                  <StatusPill status="pending">Phase 8</StatusPill>
-                </div>
                 <div className="setting-line">
                   <span className="setting-line-copy">
                     <strong>AI analysis</strong>

@@ -2,7 +2,56 @@
 
 > Companion to `PLAN_PHASE_6.md` and `PLAN_PHASE_7.md`. Work through the steps below in order.
 >
-> **Status: not started (planned 2026-11-03).**
+> **Status: code implemented and tested (2026-11-03); not yet verified live against a real Neon
+> account.** Every step except step 0 is done. The live end-to-end checks in Verification §3 need
+> a Neon API key.
+>
+> | Step | State |
+> |---|---|
+> | 0. API spike | 🟡 `scripts/neon-spike.ts` written; **not run**, since no Neon API key is on this machine (`NEON_API_KEY=… npm run spike`). The texts it confirms are matched loosely until then (`PROJECT_LIMIT`, `ORG_REQUIRED` in `src/neon/neon-http.ts`) |
+> | 1. Extract `integration_common` | ✅ 10 modules, 37 tests. Both services switched over. Their superseded copies are renamed `xxx_*` (your rule: mark, don't delete) and excluded from `tsc` and Vitest. Both services start and report healthy, and the real sealed Vercel and Render credentials still open |
+> | 2. Scaffold `neondb_integration` | ✅ :3004, schema `neon`, migration `202611030004_init` applied locally. A dev `.env` was created with fresh secrets, and `NEON_SERVICE_URL` / `NEON_SERVICE_TOKEN` were appended to `backend/.env` |
+> | 3–6. Helpers, HTTP client, provider, credentials, databases API | ✅ 66 tests. Live: `/health` ok, 401 without the token, and a fake key sent to the real Neon API maps to `neon_key_invalid` |
+> | 7. Vercel `publicEnvVars` | ✅ migration `202611030005_public_env` applied locally; 88 Vercel tests |
+> | 8. Backend seam | ✅ client, credentials, pre-flight, `provisionDatabase`, env injection, reconcile. Checked live: the backend's client gets every error code through the running service |
+> | 9. Releases | ✅ `Release` model + migration `202611030006_releases` applied locally; orchestrator, routes, `release` event, resume on boot |
+> | 10. Frontend | ✅ Neon card in Settings, Provision + Deploy all on Configure, release strip + database row on the project page, Neon chip on the build page |
+> | 11. Docs | ✅ root README (Neon setup, Deploy all, Terminal 5, env), all three service READMEs plus `integration_common`'s, `API_CONTRACT.md`, `PLAN.md` |
+>
+> Verification:
+> - **§1 build hygiene ✅**
+>   - Tests: `integration_common` 37, `vercel_integration` 88, `render_integration` 96,
+>     `neondb_integration` 66, backend 335, frontend 6.
+>   - Typecheck and lint are clean in all of them.
+>   - `next build` passes for the backend and the frontend.
+>   - After step 1 alone the count was 212 against 209 before.
+> - **§2 unit tests ✅**
+> - **§3 manual ⬜**, all of it: it needs a Neon API key and the five processes running.
+> - **Live re-check after the step 1 refactor:** only startup and opening the stored credentials
+>   were checked. A real Vercel and Render redeploy has not been run since.
+>
+> Where the code departs from the text below, and why:
+> - **Provisioning runs in the background in the backend.** `deployComponent` returns the
+>   `running` row at once, like the other providers. This keeps the HTTP request short and the
+>   build page streaming. A backend deploy that needs the database waits for it.
+> - **SvelteKit gets `PUBLIC_API_URL`, not `VITE_API_URL`.** That is SvelteKit's own convention for
+>   browser-visible variables (`$env/static/public`).
+> - **The Vercel API URL has three cases:**
+>   - the backend is not deployed yet, or there are several backends: `publicEnvVars` is omitted,
+>     so the URL set before is kept;
+>   - there is no backend at all: `[]` is sent, so a URL set before is removed;
+>   - exactly one backend with a URL: that URL is sent.
+> - **`fastify-plumbing` was not extracted.** Importing Fastify types from a linked package could
+>   pull in a second Fastify. The internal-token hook is small and stays in each service's
+>   `app.ts`, using the shared `isValidInternalToken`.
+> - **More Neon error codes than step 3 listed:** `neon_org_required`, `neon_database_gone`,
+>   `neon_database_not_ready`, `neon_unexpected_response`.
+> - **A project whose setup failed is replaced** on the next ensure: it holds no data. A project
+>   deleted on Neon is recreated empty, with a warning in the log.
+> - **Cancelling a release does not cancel a Neon provisioning** (it takes seconds). The release is
+>   marked cancelled first, so nothing after it starts.
+> - **`GET /options` was added** to the Neon service: regions and Postgres versions. The frontend
+>   currently uses its own copy in `NEON_REGIONS`.
 
 ## Context
 
@@ -34,7 +83,7 @@ and the frontend separately, and copy URLs between them by hand.
 A later push touching only `backend/` redeploys the backend, still with `DATABASE_URL`.
 
 ### Decisions made with the user (2026-11-03)
-1. **New service `backend/neon_integration`** on **:3004**, Postgres schema `neon`, with its own
+1. **New service `backend/neondb_integration`** on **:3004**, Postgres schema `neon`, with its own
    secrets. It follows the Vercel/Render pattern.
 2. **Full Deploy all.** It includes:
    - a `Release` record grouping one click's deployments;
@@ -50,12 +99,12 @@ A later push touching only `backend/` redeploys the backend, still with `DATABAS
 
 ### Further design choices in this plan (recommended defaults; change before executing if needed)
 - **Provisioning is synchronous.**
-  - Creating a Neon project takes seconds, so `neon_integration` has no runner, outbox or callbacks.
+  - Creating a Neon project takes seconds, so `neondb_integration` has no runner, outbox or callbacks.
   - The backend calls `POST /databases` (idempotent per component). The service waits for Neon's
     operations to finish (≤ 60 s) and returns.
   - The backend writes the Deployment row and its log lines itself.
 - **Connection strings are never stored.**
-  - Neither the backend nor `neon_integration` keeps them at rest. The service fetches them from
+  - Neither the backend nor `neondb_integration` keeps them at rest. The service fetches them from
     Neon (`GET /projects/:id/connection_uri`) whenever the backend asks, and the backend holds them
     in memory only, for the one deploy request.
   - A password reset on Neon is picked up automatically.
@@ -86,38 +135,138 @@ A later push touching only `backend/` redeploys the backend, still with `DATABAS
 
 ---
 
-## Constraint: one folder per service; shared plumbing in `integration_common`
+## Constraint: all Neon code in `backend/neondb_integration/`, as its own microservice
+
+**Every line of Neon-specific code goes in a new folder, `backend/neondb_integration/`, which runs
+as a separate microservice, exactly as `backend/vercel_integration/` and
+`backend/render_integration/` do.** It is its own process with its own `package.json`, its own
+database schema and its own tests. It sits next to the main backend and the other two services:
 
 | Process | Folder | Port | DB schema |
 |---|---|---|---|
 | Main backend (Next.js) | `backend/` | 3001 | `public` |
 | Vercel integration (Fastify) | `backend/vercel_integration/` | 3002 | `vercel` |
 | Render integration (Fastify) | `backend/render_integration/` | 3003 | `render` |
-| **Neon integration (Fastify)** | **`backend/neon_integration/`** | **3004** | **`neon`** |
+| **Neon DB integration (Fastify)** | **`backend/neondb_integration/`** | **3004** | **`neon`** |
 | **Shared library (no process)** | **`backend/integration_common/`** | — | — |
 
-Rules (same as Phase 7, except the shared code is now imported, not copied):
-- **Standalone services.** Each has its own `package.json`, Node 22 + `tsx` (no build step),
-  Fastify 5, Prisma 5, and Vitest.
-- **Imports allowed:**
-  - its own `src/`;
-  - `@orbitops/integration-common`.
+### Rules for the service
+The rules are the same as Phase 7, except that the shared plumbing is now imported from
+`integration_common` instead of copied.
+- **Standalone.** Node 22 + TypeScript run with `tsx` (no build step), Fastify 5, Prisma 5, Vitest.
+  - Its own files: `package.json` (name `orbitops-neondb-integration`), `tsconfig.json`,
+    `vitest.config.ts`, `.env.example`, `.gitignore`, `README.md`.
+  - It starts with `npm run dev` inside the folder (`tsx watch src/server.ts`), in its own
+    terminal, like the other two services.
+  - It can be deployed on its own, because nothing outside the folder is needed at runtime except
+    the linked `integration_common` package.
+- **Imports.** Only its own `src/` and `@orbitops/integration-common`. Never `backend/lib/**`,
+  `backend/app/**`, `backend/vercel_integration/**` or `backend/render_integration/**`.
+- **Own data.**
+  - Same Postgres instance, but only the `neon` schema (`DATABASE_URL=…?schema=neon`), with its
+    own Prisma schema and migrations in `neondb_integration/prisma/`.
+  - No foreign keys into the backend's tables: `userId` and `componentId` are plain strings.
+  - The backend never reads the `neon` schema, and the service never reads `public`.
+- **Loopback only.** It listens on `127.0.0.1:3004`. Every route except `/health` requires
+  `x-internal-token: <NEON_SERVICE_TOKEN>`, compared in constant time
+  (`integration_common/internal-auth`).
+- **Its own secrets.**
+  - `NEON_SERVICE_TOKEN`, and its own `ENCRYPTION_KEY` that seals Neon API keys.
+  - Neither is shared with the Vercel or Render services or with the backend's `ENCRYPTION_KEY`.
+  - It needs no callback secret, because it sends no callbacks (provisioning is synchronous).
+- **Never seen by the browser.** The frontend only calls the main backend, which authenticates the
+  user and forwards with the user's id.
+- **Never stores a connection string.** Neon API keys are sealed at rest. Connection URIs are
+  fetched from Neon on demand and returned only by `GET /databases/:componentId/connection`.
 
-  Never `backend/lib/**` or another service.
-- **Own data.** A service uses only its own schema (`DATABASE_URL=…?schema=neon`) and its own
-  migrations. There are no foreign keys into `public`, and the backend never reads `neon`.
-- **Loopback only.** `127.0.0.1:3004`. Every route except `/health` needs
-  `x-internal-token: <NEON_SERVICE_TOKEN>`, compared in constant time.
-- **Own secrets.** `NEON_SERVICE_TOKEN` and its own `ENCRYPTION_KEY`. Neon needs no callback secret
-  because it sends no callbacks.
-- **Never seen by the browser.**
+### Folder layout
+```text
+backend/neondb_integration/
+├── package.json  tsconfig.json  vitest.config.ts  .env.example  .gitignore  README.md
+├── prisma/schema.prisma          # schema "neon": NeonCredential, NeonDatabase
+├── prisma/migrations/            # generated offline (prisma migrate diff --from-empty)
+├── scripts/neon-spike.ts         # step 0: records real Neon API answers
+└── src/
+    ├── server.ts                 # wiring, graceful shutdown, listen 127.0.0.1:3004
+    ├── app.ts                    # Fastify routes + internal-token hook + error mapping (from integration_common)
+    ├── config.ts                 # env loading/validation (fails fast, lists what is missing)
+    ├── db.ts  types.ts           # Prisma client; wire contract shared with the backend (mirrored there)
+    ├── neon/neon-http.ts         # Neon REST client + error mapping (step 3)
+    ├── neon/neon.provider.ts     # validate key, create/find project, wait for operations, connection URIs, destroy (step 4)
+    ├── neon/project-name.ts  regions.ts  connection.ts  operations.ts   # pure helpers (step 3)
+    ├── neon/__fixtures__/        # redacted spike responses
+    ├── credentials/credentials.service.ts  credential-input.ts   # step 5
+    ├── databases/databases.service.ts  database-input.ts         # ensure / get / connection / destroy (step 6)
+    └── test-support/fake-db.ts   # in-memory Prisma stand-in for tests
+    (every module has a sibling *.test.ts)
+```
+There is no `deployments/`, `callbacks/` or outbox: unlike Vercel and Render, nothing here polls in
+the background or reports back.
+
+### Who owns what
+
+| Concern | Owner |
+|---|---|
+| Neon API key (sealed), organization, default region and Postgres version, invalid flag | **neondb_integration** (`NeonCredential`) |
+| The Neon project per database component (project id, branch, database, role, region, host, state) | **neondb_integration** (`NeonDatabase`) |
+| Creating projects, waiting for operations, fetching connection URIs, deleting projects | **neondb_integration** |
+| Users, sessions, project ownership, `Component` config, `Deployment` and `Release` rows, log files, `/events` SSE | **main backend** |
+| Putting `DATABASE_URL` / `DATABASE_URL_UNPOOLED` into the Render deploy request (in memory only) | **main backend** |
+
+### Internal API (main backend → neondb_integration)
+The full table is in step 6. In short:
+- `GET /health`;
+- `GET/PUT/PATCH/DELETE /users/:userId/credential`;
+- `POST /databases` (ensure, idempotent);
+- `GET /databases/:componentId`;
+- `GET /databases/:componentId/connection`, the only secret-bearing route;
+- `DELETE /databases/:componentId`.
+
+### What changes outside the folder (no Neon logic, only the seam)
+Steps 1 and 7–10 list the details. In short:
+1. **`backend/integration_common/`:** the extracted shared plumbing (step 1).
+2. **`backend/lib/providers/`:** a new `NeonServiceClient` + `neon-service.types.ts`. Also
+   `ProviderDeploymentsService` gets `provisionDatabase`, `systemEnvFor` and the Neon reconcile.
+3. **`backend/app/api/providers/…`:** credential routes accept `neon`.
+4. **`backend/lib/components/`:** `CAN_DEPLOY` adds `neon`, plus the Database pre-flight checks.
+5. **`backend/lib/releases/`, `backend/app/api/…/releases`, `backend/prisma/schema.prisma`:** the
+   Release model and Deploy all (step 9).
+6. **`backend/vercel_integration/`:** `publicEnvVars` for the API URL (step 7).
+7. **`backend/lib/runtime.ts`, `backend/.env.example`:** wiring, plus `NEON_SERVICE_URL` and
+   `NEON_SERVICE_TOKEN`.
+8. **The backend's `tsconfig.json`, `vitest.config.ts` and `eslint.config.mjs`:** exclude
+   `neondb_integration/**` and `integration_common/**`, as was done for `vercel_integration/**` and
+   `render_integration/**`.
+9. **Frontend:** the Neon card in Settings, Provision and Deploy all on Configure, and the release
+   strip on the project page (step 10). It talks only to the main backend.
+
+### New environment variables
+
+| File | Variable | Purpose |
+|---|---|---|
+| `neondb_integration/.env` | `PORT` (3004), `HOST` (127.0.0.1) | where the service listens |
+| | `DATABASE_URL` (`…?schema=neon`) | its own schema |
+| | `ENCRYPTION_KEY` | seals Neon API keys; different from every other key |
+| | `NEON_SERVICE_TOKEN` | expected on every call from the backend |
+| | `NEON_API_BASE`, `NEON_PROVISION_TIMEOUT_MS` (60000), `DEFAULT_REGION` (`aws-us-west-2`), `DEFAULT_PG_VERSION` (17) | optional tuning |
+| `backend/.env` | `NEON_SERVICE_URL` (`http://127.0.0.1:3004`), `NEON_SERVICE_TOKEN` | the backend's side of the shared token |
+
+The Neon API key itself never goes in a `.env`. Each user pastes theirs into Settings →
+Integrations, the same as the Vercel token and the Render API key.
+
+```text
+Browser ─► backend :3001 ──x-internal-token──► neondb_integration :3004 ──► console.neon.tech/api/v2
+                           (NEON_SERVICE_TOKEN)        (sync: ensure / connection)
+           backend :3001 ──► render_integration :3003   (deploy request carries DATABASE_URL, in memory)
+           backend :3001 ──► vercel_integration :3002   (deploy request carries the public API URL)
+```
 
 ---
 
 ## Steps
 
-### 0. API spike — `neon_integration/scripts/neon-spike.ts` (½ day, needs a Neon API key)
-Record the real answers, redacted, to `neon_integration/src/neon/__fixtures__/`:
+### 0. API spike — `neondb_integration/scripts/neon-spike.ts` (½ day, needs a Neon API key)
+Record the real answers, redacted, to `neondb_integration/src/neon/__fixtures__/`:
 
 | Question | Call(s) |
 |---|---|
@@ -178,9 +327,9 @@ things: whether an org picker is required, and how `isProjectLimitError` / `isLo
     the sealed keys still open.
 - **Docs:** the "Copied from …, keep the copies in step" header comments are removed.
 
-### 2. Scaffold `backend/neon_integration/`
+### 2. Scaffold `backend/neondb_integration/`
 - From `render_integration`'s skeleton:
-  - `package.json` (name `orbitops-neon-integration`), `tsconfig.json`, `vitest.config.ts`,
+  - `package.json` (name `orbitops-neondb-integration`), `tsconfig.json`, `vitest.config.ts`,
     `.gitignore`, `.env.example`, `README.md`;
   - `src/server.ts`, `src/app.ts`, `src/config.ts`, `src/db.ts`, `src/types.ts`,
     `src/test-support/fake-db.ts`.
@@ -414,7 +563,7 @@ things: whether an org picker is required, and how `isProjectLimitError` / `isLo
 - **Env and config:**
   - `backend/.env.example` adds `NEON_SERVICE_URL` and `NEON_SERVICE_TOKEN`;
   - the backend's `tsconfig.json`, `vitest.config.ts` and `eslint.config.mjs` exclude
-    `neon_integration/**` and `integration_common/**`.
+    `neondb_integration/**` and `integration_common/**`.
 
 ### 9. Releases — "Deploy all"
 - **Schema** (`backend/prisma/schema.prisma`, migration `2026110x0003_releases`):
@@ -526,7 +675,7 @@ things: whether an org picker is required, and how `isProjectLimitError` / `isLo
 ### 11. Docs
 - **README:**
   - architecture: the four services plus `integration_common`;
-  - a Terminal 5 run block for `neon_integration`;
+  - a Terminal 5 run block for `neondb_integration`;
   - `npm install` order (`integration_common` is linked; run `npm install` inside each service);
   - a **"Neon setup"** section:
     - the API key and organization;
@@ -537,7 +686,7 @@ things: whether an org picker is required, and how `isProjectLimitError` / `isLo
     - free-tier limits;
   - a **"Deploy all"** section: the order, and what is injected where;
   - env tables.
-- `backend/neon_integration/README.md` and `backend/integration_common/README.md`.
+- `backend/neondb_integration/README.md` and `backend/integration_common/README.md`.
 - `frontend/docs/API_CONTRACT.md`: the Neon credential routes and prefs body, the release routes, the
   `release` event, and the error codes (`neon_*`, `release_in_progress`, `preflight_failed`).
 - **`PLAN.md`:**
@@ -561,7 +710,7 @@ things: whether an org picker is required, and how `isProjectLimitError` / `isLo
 ## Verification
 1. **Build hygiene:**
    - `integration_common`: `npx tsc --noEmit && npm test`;
-   - `vercel_integration`, `render_integration` and `neon_integration`: `npx tsc --noEmit && npm test`;
+   - `vercel_integration`, `render_integration` and `neondb_integration`: `npx tsc --noEmit && npm test`;
    - `backend` and `frontend`: `npm run typecheck && npm run lint && npm test`;
    - `prisma validate` on all four schemas.
 
@@ -640,7 +789,7 @@ things: whether an org picker is required, and how `isProjectLimitError` / `isLo
      - cancel a release mid-backend → cancelled on Render too, and the release is `cancelled`.
    - **Restart the main backend** mid-release → after the restart the release carries on to the
      frontend.
-   - **Stop `neon_integration`:**
+   - **Stop `neondb_integration`:**
      - Settings shows "Unavailable";
      - pre-flight fails cleanly;
      - a backend deploy fails with "The Neon integration service is not running".

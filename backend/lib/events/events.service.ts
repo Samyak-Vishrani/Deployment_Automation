@@ -3,6 +3,8 @@ import { EventEmitter } from "node:events";
 export type AppEvent =
   | { kind: "deployment"; projectId: string; deploymentId: string; status: string }
   | { kind: "project"; projectId: string; action: "created" | "updated" | "deleted" }
+  /** A "Deploy all" (Phase 8) moved on: its status, and the stage now running (0 db, 1 backend, 2 frontend, 3 done). */
+  | { kind: "release"; projectId: string; releaseId: string; status: string; stage: number }
   /** An App installation or its repository selection changed; repository lists refetch. */
   | { kind: "github"; action: string };
 
@@ -33,6 +35,10 @@ export class EventsService {
 
   projectChanged(projectId: string, action: "created" | "updated" | "deleted"): void {
     this.emit({ kind: "project", projectId, action });
+  }
+
+  releaseChanged(projectId: string, releaseId: string, status: string, stage: number): void {
+    this.emit({ kind: "release", projectId, releaseId, status, stage });
   }
 
   subscribe(listener: (event: AppEvent) => void): () => void {

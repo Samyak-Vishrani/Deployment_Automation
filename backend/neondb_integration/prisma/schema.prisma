@@ -1,0 +1,72 @@
+// The Neon DB integration service's own data.
+//
+// It lives in its own Postgres schema ("neon", selected by `?schema=neon` in
+// DATABASE_URL), next to the main backend's tables and the Vercel and Render
+// services' schemas but never joined with them. Ids that belong to the main
+// backend (userId, componentId) are plain strings here, not foreign keys: this
+// service must keep working, and its migrations must keep applying, whatever
+// the other schemas look like.
+//
+// No connection string is ever stored. They are fetched from Neon when the
+// main backend asks (GET /databases/:componentId/connection).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// One user's Neon API key, sealed with src/crypto/secret-box, plus the
+/// defaults new databases are created with.
+model NeonCredential {
+  id              String    @id @default(cuid())
+  /// The main backend's User.id.
+  userId          String    @unique
+  apiKeyEnc       String    @db.Text
+  /// Name or email of the account the key belongs to, for Settings.
+  accountName     String    @db.VarChar(255)
+  /// The organization new projects are created in; null = the account's default.
+  orgId           String?   @db.VarChar(255)
+  orgName         String?   @db.VarChar(255)
+  /// [{ id, name }]: every organization the key can see, for the Settings picker.
+  orgs            Json      @default("[]")
+  /// Neon region id for new projects (fixed per project once created).
+  regionId        String    @default("aws-us-west-2") @db.VarChar(50)
+  /// Postgres major version for new projects.
+  pgVersion       Int       @default(17)
+  /// Set when Neon rejects the key (401); cleared by saving a new one.
+  invalidAt       DateTime?
+  lastValidatedAt DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+/// The Neon project behind one database component of the main backend.
+model NeonDatabase {
+  id            String   @id @default(cuid())
+  /// The main backend's Component.id.
+  componentId   String   @unique
+  userId        String
+  neonProjectId String   @db.VarChar(255)
+  name          String   @db.VarChar(64)
+  orgId         String?  @db.VarChar(255)
+  regionId      String   @db.VarChar(50)
+  pgVersion     Int
+  /// The project's default branch, database and owner role: what the
+  /// connection strings are requested for.
+  branchId      String   @db.VarChar(255)
+  databaseName  String   @db.VarChar(255)
+  roleName      String   @db.VarChar(255)
+  /// The compute endpoint's host, for display. Never a password.
+  host          String?  @db.VarChar(255)
+  /// provisioning | ready | failed
+  state         String   @db.VarChar(20)
+  lastError     String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+}

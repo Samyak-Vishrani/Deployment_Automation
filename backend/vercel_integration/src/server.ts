@@ -1,15 +1,19 @@
 import "dotenv/config";
 import { resolve } from "node:path";
+import { CallbackClient } from "@orbitops/integration-common/callback-client";
+import { DeployQueue } from "@orbitops/integration-common/deploy-queue";
+import { EnvVault } from "@orbitops/integration-common/env-vault";
+import { EventOutbox } from "@orbitops/integration-common/outbox";
 import { buildApp } from "./app";
-import { CallbackClient } from "./callbacks/callback-client";
-import { EventOutbox } from "./callbacks/outbox";
+import { PrismaPendingStore } from "./callbacks/pending-store";
 import { loadConfig } from "./config";
 import { CredentialsService } from "./credentials/credentials.service";
 import { prisma } from "./db";
-import { DeployQueue } from "./deployments/deploy-queue";
 import { DeployRunner } from "./deployments/deploy-runner";
 import { DeploymentsService } from "./deployments/deployments.service";
+import { VercelLogProxy } from "./log-proxy/log-proxy";
 import { TokenVault } from "./deployments/token-vault";
+import type { UserEnvVar } from "./types";
 import { setVercelApiBase } from "./vercel/vercel-http";
 import { VercelProvider } from "./vercel/vercel.provider";
 
@@ -23,15 +27,20 @@ async function main(): Promise<void> {
 
   const provider = new VercelProvider();
   const credentials = new CredentialsService(prisma, provider);
-  const outbox = new EventOutbox(prisma, new CallbackClient(config.mainApiUrl, config.internalCallbackSecret));
+  const outbox = new EventOutbox(
+    new PrismaPendingStore(prisma),
+    new CallbackClient(config.mainApiUrl, config.internalCallbackSecret, "vercel"),
+  );
   const tokens = new TokenVault();
+  // The user's env var values (Phase 9): in memory only, shared by the service and the runner.
+  const envVault = new EnvVault<UserEnvVar>();
   const queue = new DeployQueue(config.deployConcurrency);
   const runner = new DeployRunner(prisma, provider, credentials, outbox, tokens, {
     pollIntervalMs: config.pollIntervalMs,
     deployTimeoutMs: config.deployTimeoutMs,
     workRoot: resolve(process.env.DATA_DIR ?? "./data", "work"),
-  });
-  const deployments = new DeploymentsService(prisma, queue, tokens, outbox, credentials, provider);
+  }, envVault);
+  const deployments = new DeploymentsService(prisma, queue, tokens, outbox, credentials, provider, envVault);
 
   await prisma.$connect();
 
@@ -52,6 +61,8 @@ async function main(): Promise<void> {
       await prisma.$queryRaw`SELECT 1`;
       return true;
     },
+    logProxy: new VercelLogProxy(prisma, credentials),
+    logsProxyToken: config.logsProxyToken ?? undefined,
     logger: process.env.LOG_REQUESTS === "1",
   });
 

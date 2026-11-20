@@ -1,14 +1,16 @@
 import "dotenv/config";
+import { CallbackClient } from "@orbitops/integration-common/callback-client";
+import { DeployQueue } from "@orbitops/integration-common/deploy-queue";
+import { EventOutbox } from "@orbitops/integration-common/outbox";
 import { buildApp } from "./app";
-import { CallbackClient } from "./callbacks/callback-client";
-import { EventOutbox } from "./callbacks/outbox";
+import { PrismaPendingStore } from "./callbacks/pending-store";
 import { loadConfig } from "./config";
 import { CredentialsService } from "./credentials/credentials.service";
 import { prisma } from "./db";
-import { DeployQueue } from "./deployments/deploy-queue";
 import { DeployRunner } from "./deployments/deploy-runner";
 import { DeploymentsService } from "./deployments/deployments.service";
-import { EnvVault } from "./deployments/env-vault";
+import { RenderLogProxy } from "./log-proxy/log-proxy";
+import { EnvVault } from "@orbitops/integration-common/env-vault";
 import { setRenderApiBase } from "./render/render-http";
 import { RenderProvider } from "./render/render.provider";
 
@@ -22,7 +24,10 @@ async function main(): Promise<void> {
 
   const provider = new RenderProvider();
   const credentials = new CredentialsService(prisma, provider);
-  const outbox = new EventOutbox(prisma, new CallbackClient(config.mainApiUrl, config.callbackSecret));
+  const outbox = new EventOutbox(
+    new PrismaPendingStore(prisma),
+    new CallbackClient(config.mainApiUrl, config.callbackSecret, "render"),
+  );
   const vault = new EnvVault();
   const queue = new DeployQueue(config.deployConcurrency);
   const runner = new DeployRunner(prisma, provider, credentials, outbox, vault, {
@@ -52,6 +57,8 @@ async function main(): Promise<void> {
       await prisma.$queryRaw`SELECT 1`;
       return true;
     },
+    logProxy: new RenderLogProxy(prisma, credentials),
+    logsProxyToken: config.logsProxyToken ?? undefined,
     logger: process.env.LOG_REQUESTS === "1",
   });
 

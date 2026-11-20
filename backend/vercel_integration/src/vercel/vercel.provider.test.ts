@@ -276,7 +276,7 @@ describe("status and logs", () => {
       body: [{ type: "stdout", created: 5, payload: { text: "hello", id: "e1" } }],
     });
     const lines = await new VercelProvider().getLogs(ctx, "dpl_1", 4);
-    expect(lines).toEqual([{ id: "e1", at: 5, stream: "stdout", text: "hello" }]);
+    expect(lines).toEqual([{ id: "e1", at: 5, stream: "stdout", text: "hello", phase: "build" }]);
     expect(calls[0].query.get("since")).toBe("4");
     expect(calls[0].query.get("builds")).toBe("1");
   });
@@ -305,5 +305,86 @@ describe("validateCredentials", () => {
   it("rejects a bad token", async () => {
     on("GET", "/v2/user", { status: 403, body: { error: { code: "forbidden", invalidToken: true } } });
     await expect(new VercelProvider().validateCredentials("bad")).rejects.toMatchObject({ code: "vercel_token_invalid" });
+  });
+});
+
+describe("syncPublicEnv", () => {
+  it("upserts the values as plain production + preview vars, and deletes only the stale managed keys", async () => {
+    on("POST", "/v10/projects/prj_1/env", { status: 201, body: {} });
+    on("GET", "/v9/projects/prj_1/env", {
+      status: 200,
+      body: {
+        envs: [
+          { id: "env_old", key: "VITE_API_URL" },
+          { id: "env_user", key: "USER_ADDED" },
+          { id: "env_new", key: "NEXT_PUBLIC_API_URL" },
+        ],
+      },
+    });
+    on("DELETE", "/v9/projects/prj_1/env/env_old", { status: 200, body: {} });
+
+    await new VercelProvider().syncPublicEnv(
+      ctx,
+      "prj_1",
+      [{ key: "NEXT_PUBLIC_API_URL", value: "https://shop-api.onrender.com" }],
+      ["VITE_API_URL"],
+    );
+
+    const upsert = calls.find((c) => c.method === "POST")!;
+    expect(upsert.query.get("upsert")).toBe("true");
+    expect(upsert.body).toEqual([
+      { key: "NEXT_PUBLIC_API_URL", value: "https://shop-api.onrender.com", type: "plain", target: ["production", "preview"] },
+    ]);
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v9/projects/prj_1/env/env_old"]);
+  });
+
+  it("makes no call at all for nothing to set or remove", async () => {
+    await new VercelProvider().syncPublicEnv(ctx, "prj_1", [], []);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("syncUserEnv (Phase 9)", () => {
+  it("deletes stale and flipped keys first, then upserts secrets as sensitive and the rest as encrypted", async () => {
+    on("GET", "/v9/projects/prj_1/env", {
+      status: 200,
+      body: {
+        envs: [
+          { id: "env_gone", key: "OLD_TOKEN" },
+          { id: "env_flip", key: "GREETING" },
+          { id: "env_user", key: "HAND_MADE" },
+        ],
+      },
+    });
+    on("DELETE", "/v9/projects/prj_1/env/env_gone", { status: 200, body: {} });
+    on("DELETE", "/v9/projects/prj_1/env/env_flip", { status: 200, body: {} });
+    on("POST", "/v10/projects/prj_1/env", { status: 201, body: {} });
+
+    await new VercelProvider().syncUserEnv(
+      ctx,
+      "prj_1",
+      [
+        { key: "GREETING", value: "hello", secret: true },
+        { key: "NEXT_PUBLIC_X", value: "x", secret: false },
+      ],
+      ["OLD_TOKEN"],
+      ["GREETING"],
+    );
+
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /v9/projects/prj_1/env",
+      "DELETE /v9/projects/prj_1/env/env_gone",
+      "DELETE /v9/projects/prj_1/env/env_flip",
+      "POST /v10/projects/prj_1/env",
+    ]);
+    expect(calls[3].body).toEqual([
+      { key: "GREETING", value: "hello", type: "sensitive", target: ["production", "preview"] },
+      { key: "NEXT_PUBLIC_X", value: "x", type: "encrypted", target: ["production", "preview"] },
+    ]);
+  });
+
+  it("makes no call for an empty set with nothing to remove", async () => {
+    await new VercelProvider().syncUserEnv(ctx, "prj_1", [], [], []);
+    expect(calls).toHaveLength(0);
   });
 });

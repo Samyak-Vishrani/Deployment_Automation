@@ -11,6 +11,8 @@ export interface SseMessage {
   /** Becomes the SSE `event:` field, which is what addEventListener matches. */
   type: string;
   data: string;
+  /** Becomes the SSE `id:` field: EventSource sends it back as Last-Event-ID on reconnect. */
+  id?: string;
 }
 
 export interface SseHandle {
@@ -24,7 +26,8 @@ function frame(message: SseMessage): Uint8Array {
   // A payload containing newlines must be split across several data: lines, or
   // everything after the first newline is silently dropped by the client.
   const data = message.data.split("\n").map((line) => `data: ${line}`).join("\n");
-  return encoder.encode(`event: ${message.type}\n${data}\n\n`);
+  const id = message.id !== undefined ? `id: ${message.id.replace(/[\r\n]/g, "")}\n` : "";
+  return encoder.encode(`${id}event: ${message.type}\n${data}\n\n`);
 }
 
 /**

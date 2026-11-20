@@ -22,6 +22,14 @@ enum DeploymentTrigger {
   rollback
 }
 
+/// One "Deploy all" click (Phase 8): its components deployed in stages.
+enum ReleaseStatus {
+  running
+  success
+  failed
+  cancelled
+}
+
 enum AnalysisStatus {
   running
   succeeded
@@ -149,8 +157,8 @@ model Project {
   watchPaths     String[] @default([])
   dockerfilePath String   @default("Dockerfile")
   buildContext   String   @default(".")
-  /// Runtime environment for the container. Never passed as --build-arg: build
-  /// args are baked into `docker history`.
+  /// Deprecated (Phase 9): moved into EnvVar (sealed) at startup; always {}.
+  /// Kept so rolling the code back loses nothing. Never read.
   envVars        Json     @default("{}")
 
   /// Port the app listens on inside the container.
@@ -174,6 +182,8 @@ model Project {
   analyses         Analysis[]
   deployments      Deployment[]
   deployComponents Component[]
+  releases         Release[]
+  env              EnvVar[]
 
   @@unique([userId, githubFullName])
   @@index([userId])
@@ -277,11 +287,16 @@ model Component {
   /// The ProjectComponent this was proposed from. Not a foreign key: that row
   /// is pruned with its analysis snapshot, and this one must outlive it.
   analysisComponentId String?
+  /// Bumped on every env change that reaches this component (its own, or a
+  /// shared one for a backend). A deploy records the revision it was sent
+  /// with; newer than the last successful deploy = "redeploy to apply".
+  envRevision         Int             @default(0)
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
 
   project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   deployments Deployment[]
+  env         EnvVar[]
 
   @@unique([projectId, kind, rootDir])
   @@index([projectId])
@@ -333,7 +348,16 @@ model Deployment {
   /// or below it are redeliveries and are ignored.
   providerEventSeq     Int        @default(0)
 
+  // ------------------------------------------------------ releases (phase 8) --
+  /// The "Deploy all" this deployment is part of; null for single deploys and pushes.
+  releaseId            String?
+
+  // ------------------------------------------------------ env vars (phase 9) --
+  /// The component's envRevision this deploy was sent with; NULL before Phase 9.
+  envRevision          Int?
+
   component Component? @relation(fields: [componentId], references: [id], onDelete: SetNull)
+  release   Release?   @relation(fields: [releaseId], references: [id], onDelete: SetNull)
 
   /// The durable idempotency backstop. Postgres treats NULLs as distinct, so
   /// manual deploys (deliveryId NULL) are unlimited, while a GitHub redelivery
@@ -344,4 +368,58 @@ model Deployment {
   @@index([projectId, queuedAt(sort: Desc)])
   @@index([componentId, queuedAt(sort: Desc)])
   @@index([status])
+  @@index([releaseId])
+}
+
+/// One "Deploy all" click: the project's components deployed in order, all at
+/// one commit. Stage 0 provisions the databases (Neon), stage 1 deploys the
+/// backends (Render, with DATABASE_URL), stage 2 the frontends (Vercel, with
+/// the backend's URL). A stage starts only once the one before is all live.
+model Release {
+  id            String            @id @default(cuid())
+  projectId     String
+  /// Per-project sequence, shown as "#12".
+  number        Int
+  status        ReleaseStatus     @default(running)
+  trigger       DeploymentTrigger @default(manual)
+  branch        String
+  commitSha     String
+  commitMessage String?           @db.Text
+  /// 0 = databases, 1 = backends, 2 = frontends: the stage now running (3 = done).
+  stage         Int               @default(0)
+  errorMessage  String?           @db.Text
+  createdAt     DateTime          @default(now())
+  finishedAt    DateTime?
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deployments Deployment[]
+
+  @@unique([projectId, number])
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([status])
+}
+
+/// One environment variable (Phase 9). componentId NULL = shared: sent to every
+/// backend and to local Docker. The value is sealed with lib/crypto/secret-box
+/// whether secret or not; isSecret decides only whether it can ever be read
+/// back, and makes it a "sensitive" var on Vercel.
+///
+/// Postgres treats NULLs as distinct, so the @@unique below does not cover
+/// shared rows: migration 202611040001_env_vars adds the partial unique index
+/// "EnvVar_shared_key" on (projectId, key) WHERE componentId IS NULL.
+model EnvVar {
+  id          String   @id @default(cuid())
+  projectId   String
+  componentId String?
+  key         String   @db.VarChar(255)
+  valueEnc    String   @db.Text
+  isSecret    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  component Component? @relation(fields: [componentId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, componentId, key])
+  @@index([projectId])
 }

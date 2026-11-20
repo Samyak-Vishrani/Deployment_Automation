@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { toErrorResponse } from "@/lib/api/http-error";
 import { requireUser } from "@/lib/auth/current-user";
 import {
+  parseNeonPrefsBody,
   parseProviderParam,
   parseRenderPrefsBody,
   parseTeamBody,
@@ -17,7 +18,7 @@ type RouteContext = {
 };
 
 /*
- * The signed-in user's account with one provider (vercel, render). Each method
+ * The signed-in user's account with one provider (vercel, render, neon). Each method
  * authenticates the user here and forwards to that provider's integration
  * service with the user's id: the service never sees the browser, and the
  * browser never sees the token or key again after it is saved.
@@ -48,6 +49,7 @@ export async function PUT(request: Request, context: RouteContext): Promise<Next
 /**
  * Vercel: `{ teamId }`, the team new projects are created in (null = personal).
  * Render: `{ ownerId?, region?, plan? }`, the workspace and defaults for new services.
+ * Neon: `{ orgId?, regionId?, pgVersion? }`, the organization and defaults for new databases.
  */
 export async function PATCH(request: Request, context: RouteContext): Promise<NextResponse> {
   try {
@@ -56,6 +58,9 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Ne
     const body = await request.json().catch(() => null);
     if (provider === "render") {
       return NextResponse.json(await services().render.setPreferences(user.id, parseRenderPrefsBody(body)));
+    }
+    if (provider === "neon") {
+      return NextResponse.json(await services().neon.setPreferences(user.id, parseNeonPrefsBody(body)));
     }
     const { teamId } = parseTeamBody(body);
     return NextResponse.json(await services().vercel.setTeam(user.id, teamId));

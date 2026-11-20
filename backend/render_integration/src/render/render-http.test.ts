@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { providerFetch, retryAfterMs } from "../http/provider-fetch";
+import { providerFetch, retryAfterMs } from "@orbitops/integration-common/provider-fetch";
 import { expectOk, renderRequest, setRenderApiBase } from "./render-http";
 
 const KEY = "rnd_secret_api_key_value_123456";

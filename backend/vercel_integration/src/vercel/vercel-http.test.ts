@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { providerFetch, retryAfterMs } from "../http/provider-fetch";
-import { ProviderError } from "../http/provider-error";
+import { providerFetch, retryAfterMs } from "@orbitops/integration-common/provider-fetch";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import { expectOk, setVercelApiBase, vercelRequest } from "./vercel-http";
 
 const TOKEN = "vercel_secret_token_value_123";

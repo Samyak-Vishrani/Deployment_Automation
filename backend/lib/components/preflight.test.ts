@@ -27,7 +27,9 @@ function deps(overrides: Partial<PreflightDeps> = {}, files: Record<string, stri
   };
 }
 
-const project = { userId: "u1", filledEnvKeys: [] as string[] };
+const noEnv = () => ({ keys: [] as string[], filled: new Set<string>() });
+const project = { userId: "u1", envFor: noEnv };
+const withEnv = (...keys: string[]) => ({ userId: "u1", envFor: () => ({ keys, filled: new Set(keys) }) });
 const byId = (result: PreflightResult, id: string) =>
   result.checks.find((check) => check.id === id);
 
@@ -62,12 +64,40 @@ describe("runPreflight", () => {
     expect(result.deployable).toEqual({ c1: true });
   });
 
-  it("keeps a Render backend undeployable until Render can tell how to run it, and Neon pending", async () => {
+  it("keeps a Render backend undeployable until Render can tell how to run it; a Neon database is deployable", async () => {
     const result = await runPreflight(project, [web, api, db], deps({ credentialState: async () => "connected" }));
     expect(result.ok).toBe(false);
-    expect(result.deployable).toEqual({ c1: true, c2: false, c3: false });
+    expect(result.deployable).toEqual({ c1: true, c2: false, c3: true });
     expect(byId(result, "runtime:c2")?.status).toBe("fail");
-    expect(byId(result, "credential:neon")).toMatchObject({ status: "pending", message: "Deploying to Neon arrives in Phase 8." });
+    expect(byId(result, "credential:neon")).toMatchObject({ status: "pass", message: "Neon account connected." });
+  });
+
+  it("checks a Neon database: Postgres only, with the migrations advice", async () => {
+    const ready = { ...api, framework: "express", startCmd: "npm start" };
+    const ok = await runPreflight(project, [web, ready, { ...db, framework: "postgres" }], deps({ credentialState: async () => "connected" }));
+    expect(ok.ok).toBe(true);
+    expect(byId(ok, "engine:c3")).toMatchObject({ status: "pass" });
+    expect(byId(ok, "migrations:c3")).toMatchObject({ status: "pass" });
+    expect(byId(ok, "migrations:c3")?.message).toMatch(/DATABASE_URL_UNPOOLED.*migrate deploy/);
+    // No root-dir or env checks for a database: it has no folder.
+    expect(byId(ok, "root-dir:c3")).toBeUndefined();
+
+    const mysql = await runPreflight(project, [{ ...db, framework: "mysql" }], deps({ credentialState: async () => "connected" }));
+    expect(byId(mysql, "engine:c3")).toMatchObject({ status: "fail" });
+    expect(byId(mysql, "engine:c3")?.message).toMatch(/Postgres only/);
+    expect(mysql.deployable).toEqual({ c3: false });
+  });
+
+  it("asks for a Neon account, and names the API key when Neon rejects it", async () => {
+    const missing = await runPreflight(project, [db], deps());
+    expect(byId(missing, "credential:neon")).toMatchObject({ status: "fail", message: "Connect Neon in Settings to deploy there." });
+    expect(missing.deployable).toEqual({ c3: false });
+
+    const invalid = await runPreflight(project, [db], deps({ credentialState: async () => "invalid" }));
+    expect(byId(invalid, "credential:neon")?.message).toBe("Neon rejected the saved API key. Reconnect Neon in Settings.");
+
+    const down = await runPreflight(project, [db], deps({ credentialState: async () => "unavailable" }));
+    expect(byId(down, "credential:neon")?.message).toMatch(/Neon integration service is not running/);
   });
 
   it("makes a Render backend deployable once its framework and start command are set", async () => {
@@ -130,7 +160,7 @@ describe("runPreflight", () => {
 
   it("names the env vars without a value, never their values", async () => {
     const files = { "backend/.env.example": "# comment\nPORT=3000\nexport API_KEY=\nSECRET=changeme\n" };
-    const result = await runPreflight({ ...project, filledEnvKeys: ["PORT"] }, [api], deps({}, files));
+    const result = await runPreflight(withEnv("PORT"), [api], deps({}, files));
     const env = byId(result, "env:c2");
     expect(env?.status).toBe("fail");
     expect(env?.message).toContain("API_KEY, SECRET");
@@ -143,6 +173,32 @@ describe("runPreflight", () => {
     const withDb = await runPreflight(project, [api, db], deps({}, files));
     expect(byId(without, "env:c2")?.status).toBe("fail");
     expect(byId(withDb, "env:c2")?.status).toBe("pass");
+  });
+
+  it("counts the backend's URL as provided to a frontend with exactly one backend (Phase 9)", async () => {
+    const files = { "frontend/.env.example": "NEXT_PUBLIC_API_URL=http://localhost:3001\n" };
+    const nextWeb = { ...web, framework: "nextjs" };
+    const alone = await runPreflight(project, [nextWeb], deps({}, files));
+    const withApi = await runPreflight(project, [nextWeb, api], deps({}, files));
+    expect(byId(alone, "env:c1")).toMatchObject({ status: "fail", message: expect.stringContaining("Add it under web → Environment.") });
+    expect(byId(withApi, "env:c1")?.status).toBe("pass");
+  });
+
+  it("asks per component, and points a backend at Shared too", async () => {
+    const files = { "backend/.env.example": "STRIPE_KEY=\n" };
+    const result = await runPreflight(project, [api], deps({}, files));
+    expect(byId(result, "env:c2")?.message).toContain("Add it under api → Environment (or Shared).");
+    const envFor = (c: PreflightComponent) => (c.id === "c2" ? { keys: ["STRIPE_KEY"], filled: new Set(["STRIPE_KEY"]) } : noEnv());
+    const filled = await runPreflight({ userId: "u1", envFor }, [api], deps({}, files));
+    expect(byId(filled, "env:c2")?.status).toBe("pass");
+  });
+
+  it("fails a stored key the provider sets itself, and adds no check otherwise", async () => {
+    const reserved = await runPreflight(withEnv("RENDER_SERVICE_ID", "PORT"), [api], deps());
+    expect(byId(reserved, "env-reserved:c2")).toMatchObject({ status: "fail", message: expect.stringContaining("RENDER_SERVICE_ID is set by Render itself") });
+    expect(reserved.deployable.c2).toBe(false);
+    const fine = await runPreflight(withEnv("PORT"), [api], deps());
+    expect(byId(fine, "env-reserved:c2")).toBeUndefined();
   });
 
   it("passes the env check when there is no .env.example, without reading files", async () => {

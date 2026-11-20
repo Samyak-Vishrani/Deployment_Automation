@@ -21,11 +21,17 @@ Browser ──► backend :3001 ──x-internal-token (RENDER_SERVICE_TOKEN)─
 - **Stack:** Node 22, TypeScript run with `tsx`, Fastify, Prisma, Vitest.
 - **Data:** the same Postgres as the backend, in its own schema (`?schema=render`). There are no
   foreign keys into anyone else's tables, and nobody else reads these.
-- **No imports** from `backend/lib` or `backend/vercel_integration`. The shared plumbing is copied
-  in, and each copy's first lines say where it came from:
-  - the internal-token check, secret-box, redact;
+- **No imports** from `backend/lib` or the other services. The plumbing every integration shares
+  comes from `@orbitops/integration-common` (`backend/integration_common`), linked by
+  `npm install` as `file:../integration_common`:
+  - the internal-token check, secret-box (`src/crypto/secret-box.ts` holds this service's own
+    instance), redact;
   - the retrying fetch and provider errors;
-  - the callback outbox, the deploy queue, and the fake DB used by tests.
+  - the callback client and outbox (`src/callbacks/pending-store.ts` adapts it to
+    `RenderDeployment`), the deploy queue, the event contract.
+
+  The fake DB used by tests stays here, because it mirrors this service's own tables. Files named
+  `xxx_*` are the old copies, kept for review and excluded from `tsc` and Vitest.
 - **Listens on** `127.0.0.1` only. Every route except `/health` requires `x-internal-token`.
 - **Its own secrets.** `RENDER_SERVICE_TOKEN`, `RENDER_CALLBACK_SECRET` and `ENCRYPTION_KEY` are
   shared with nothing but the backend. The backend checks that a Render-signed event only touches
@@ -59,7 +65,7 @@ upload, so a repo Render cannot read fails with a clear `render_repo_access` err
    install/build/start commands, Node version, health check path), the repo and branch, the exact
    commit SHA, and the project's env vars.
    - The service stores the request **without** the env values. They are held in memory for the
-     run only (`deployments/env-vault.ts`), and it returns 202.
+     run only (`EnvVault` from `integration_common`, since Phase 9), and it returns 202.
 2. **The web service is created or updated** (`src/render/render.provider.ts`):
    - **First deploy:** `POST /v1/services` creates a `web_service`.
      - The runtime comes from the framework (`runtime-map.ts`). Render's single build command is
@@ -126,6 +132,25 @@ All routes except `/health` need `x-internal-token: <RENDER_SERVICE_TOKEN>`.
 | `PUT /components/:componentId/env?userId=` | Phase 9 hook: upsert env vars on the service |
 | `POST /components/:componentId/rollback?userId=` | Phase 11 hook: `{ renderDeployId }` goes live again |
 | `DELETE /components/:componentId?userId=` | delete the Render service; not called by the MVP |
+
+### Log proxy (Phase 12)
+
+`GET /log-proxy/components/:componentId/logs?userId=&type=app|request&startTime=&direction=&limit=`
+is for `backend/logs` only, which holds all the log code (the polling loop, de-duplication,
+parsing):
+- **Auth:** it takes `x-logs-token: <LOGS_PROXY_TOKEN>`. The internal token does not open it, and
+  `LOGS_PROXY_TOKEN` opens nothing else. Unset = 503.
+- **Upstream:** each call reads **one** `GET /v1/logs` page for the component's own service. The
+  owner and resource are fixed from stored ids.
+- **Response:** Render's JSON comes back with its `ratelimit-*` headers. Render allows 30 log reads
+  a minute.
+
+Build-log lines relayed during a deploy now carry `origin` (`orbitops` for this service's own
+lines, `provider` for Render's) and `phase` (`build`, or `runtime` for the service's first app
+output).
+
+`npm run spike:runtime` (`scripts/runtime-logs-spike.ts`) records real app and request log pages
+and the rate-limit headers.
 
 ## Checking the Render API against your account
 

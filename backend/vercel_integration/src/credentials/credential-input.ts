@@ -1,4 +1,4 @@
-import { badRequest } from "../http/provider-error";
+import { badRequest } from "@orbitops/integration-common/provider-error";
 
 /**
  * Hand-written validators in the style of backend/lib/projects/project-input.ts:

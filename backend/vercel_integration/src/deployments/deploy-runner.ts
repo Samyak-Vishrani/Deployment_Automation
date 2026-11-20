@@ -1,17 +1,27 @@
 import { join } from "node:path";
-import type { VercelDeployment } from "@prisma/client";
+import type { VercelDeployment, VercelProject } from "@prisma/client";
 import { removeDir } from "../common/fs-utils";
-import { redact } from "../common/redact";
+import { redact } from "@orbitops/integration-common/redact";
 import type { Db } from "../db";
 import { downloadRepoAt } from "../github/source-archive";
-import { abortableSleep } from "../http/provider-fetch";
-import { ProviderError } from "../http/provider-error";
+import { abortableSleep } from "@orbitops/integration-common/provider-fetch";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import type { CredentialsService } from "../credentials/credentials.service";
-import type { EventOutbox } from "../callbacks/outbox";
-import { isTerminal, type NormalisedStatus, type ProviderEvent, type StoredDeployInput } from "../types";
+import type { EventOutbox } from "@orbitops/integration-common/outbox";
+import { EnvVault } from "@orbitops/integration-common/env-vault";
+import { envHash } from "@orbitops/integration-common/env-hash";
+import {
+  isTerminal,
+  type EnvVar,
+  type NormalisedStatus,
+  type ProviderEvent,
+  type StoredDeployInput,
+  type UserEnvVar,
+} from "../types";
+import { publicEnvHash, staleKeys } from "../vercel/public-env";
 import type { VercelContext } from "../vercel/vercel-http";
 import type { VercelProvider } from "../vercel/vercel.provider";
-import type { AbortReason, DeployJob } from "./deploy-queue";
+import type { AbortReason, DeployJob } from "@orbitops/integration-common/deploy-queue";
 import type { TokenVault } from "./token-vault";
 
 export interface RunnerOptions {
@@ -24,7 +34,13 @@ export interface RunnerOptions {
   downloadSource?: typeof downloadRepoAt;
 }
 
-type Provider = Pick<VercelProvider, "ensureProject" | "deploy" | "getStatus" | "getLogs" | "cancel">;
+type Provider = Pick<
+  VercelProvider,
+  "ensureProject" | "syncPublicEnv" | "syncUserEnv" | "deploy" | "getStatus" | "getLogs" | "cancel"
+>;
+
+/** What VercelProject.managedUserEnvKeys holds: the keys we set, and whether each was a secret. */
+type ManagedUserKey = { key: string; secret: boolean };
 type Credentials = Pick<CredentialsService, "getToken" | "markInvalid">;
 type Outbox = Pick<EventOutbox, "push" | "drain">;
 
@@ -52,6 +68,8 @@ export class DeployRunner {
     private readonly outbox: Outbox,
     private readonly tokens: Pick<TokenVault, "take">,
     private readonly options: RunnerOptions,
+    /** The user's env var values (Phase 9), put there by DeploymentsService.start. */
+    private readonly envVault: Pick<EnvVault<UserEnvVar>, "take"> = new EnvVault<UserEnvVar>(),
   ) {
     this.sleep = options.sleep ?? abortableSleep;
     this.download = options.downloadSource ?? downloadRepoAt;
@@ -65,10 +83,14 @@ export class DeployRunner {
     const secrets: string[] = [];
     const githubToken = this.tokens.take(row.deploymentId);
     if (githubToken) secrets.push(githubToken);
+    // Every user value is scrubbed from the build log we relay, secret or not:
+    // a non-secret is still not ours to copy into another system's logs.
+    const userEnv = this.envVault.take(row.deploymentId);
+    for (const v of userEnv ?? []) if (v.value) secrets.push(v.value);
 
     const emit = (event: ProviderEvent) => this.outbox.push(row.deploymentId, event);
     const log = (text: string, stream: "info" | "stdout" | "stderr" = "info") =>
-      emit({ type: "logs", lines: [{ at: Date.now(), stream, text: redact(text, secrets) }] });
+      emit({ type: "logs", lines: [{ at: Date.now(), stream, text: redact(text, secrets), phase: "deploy", origin: "orbitops" }] });
 
     let ctx: VercelContext | undefined;
     let vercelDeploymentId = row.vercelDeploymentId;
@@ -108,6 +130,23 @@ export class DeployRunner {
           providerResourceId: project.vercelProjectId,
           projectName: project.name,
         });
+
+        // Before the deploy: frameworks inline NEXT_PUBLIC_* and the like at build time.
+        if (input.publicEnvVars) {
+          await this.syncPublicEnv(ctx, input.component.id, project.vercelProjectId, input.publicEnvVars, known, log);
+        }
+
+        // The user's own vars (Phase 9). Absent from the request = leave them alone.
+        if (input.envKeys !== undefined) {
+          if (userEnv === undefined && input.envKeys.length > 0) {
+            throw new ProviderError(
+              "This deploy was interrupted before it reached Vercel, and its env vars are no longer held. Deploy again.",
+              409,
+              "vercel_interrupted",
+            );
+          }
+          await this.syncUserEnv(ctx, input.component.id, project.vercelProjectId, userEnv ?? [], known, log);
+        }
 
         log(`==> Deploying ${input.commitSha.slice(0, 7)} of ${input.repo.fullName}@${input.repo.branch} to Vercel`);
         const workDir = join(this.options.workRoot, row.deploymentId);
@@ -169,6 +208,70 @@ export class DeployRunner {
     }
   }
 
+  /**
+   * Sets the public env vars on the project when they changed since the last
+   * deploy, and removes the ones set before that are no longer sent. The values
+   * are public (they end up in the browser bundle), so they are logged.
+   */
+  private async syncPublicEnv(
+    ctx: VercelContext,
+    componentId: string,
+    vercelProjectId: string,
+    vars: EnvVar[],
+    known: VercelProject | null,
+    log: (text: string) => void,
+  ): Promise<void> {
+    const hash = publicEnvHash(vars);
+    const sameProject = known?.vercelProjectId === vercelProjectId;
+    const previous = sameProject ? known!.managedEnvKeys : [];
+    if (sameProject && known!.envHash === hash) return;
+
+    const remove = staleKeys(previous, vars);
+    await this.provider.syncPublicEnv(ctx, vercelProjectId, vars, remove);
+    await this.db.vercelProject.update({
+      where: { componentId },
+      data: { envHash: hash, managedEnvKeys: vars.map((v) => v.key) },
+    });
+    for (const v of vars) log(`Set ${v.key}=${v.value} on the Vercel project.`);
+    for (const key of remove) log(`Removed ${key} from the Vercel project (no longer sent).`);
+  }
+
+  /**
+   * Sets the user's env vars when the set changed since the last deploy:
+   * secrets as "sensitive", the rest as "encrypted". Keys this service set
+   * before and no longer gets are deleted; a key whose secret flag flipped is
+   * deleted and created again. Logs name keys only.
+   */
+  private async syncUserEnv(
+    ctx: VercelContext,
+    componentId: string,
+    vercelProjectId: string,
+    vars: UserEnvVar[],
+    known: VercelProject | null,
+    log: (text: string) => void,
+  ): Promise<void> {
+    const hash = envHash(vars);
+    const sameProject = known?.vercelProjectId === vercelProjectId;
+    const previous: ManagedUserKey[] = sameProject ? managedUserKeys(known!.managedUserEnvKeys) : [];
+    if (sameProject && known!.userEnvHash === hash) return;
+
+    const wanted = new Map(vars.map((v) => [v.key, v.secret]));
+    const remove = previous.filter((p) => !wanted.has(p.key)).map((p) => p.key);
+    const recreate = previous.filter((p) => wanted.has(p.key) && wanted.get(p.key) !== p.secret).map((p) => p.key);
+    await this.provider.syncUserEnv(ctx, vercelProjectId, vars, remove, recreate);
+    await this.db.vercelProject.update({
+      where: { componentId },
+      data: {
+        userEnvHash: hash,
+        managedUserEnvKeys: vars.map((v) => ({ key: v.key, secret: v.secret })) satisfies ManagedUserKey[],
+      },
+    });
+    if (vars.length > 0) {
+      log(`Set ${vars.length} environment variable${vars.length === 1 ? "" : "s"} on the Vercel project (keys: ${vars.map((v) => (v.secret ? `${v.key} (secret)` : v.key)).join(", ")}).`);
+    }
+    for (const key of remove) log(`Removed ${key} from the Vercel project (no longer set in OrbitOps).`);
+  }
+
   private async poll(
     row: VercelDeployment,
     ctx: VercelContext,
@@ -196,7 +299,13 @@ export class DeployRunner {
         if (fresh.length > 0) {
           emit({
             type: "logs",
-            lines: fresh.map((line) => ({ at: line.at, stream: line.stream, text: redact(line.text, secrets) })),
+            lines: fresh.map((line) => ({
+              at: line.at,
+              stream: line.stream,
+              text: redact(line.text, secrets),
+              phase: line.phase ?? "build",
+              origin: "provider",
+            })),
           });
           const newest = Math.max(...fresh.map((line) => line.at));
           if (Number.isFinite(newest) && newest > (lastEventAt ?? 0)) {
@@ -308,4 +417,11 @@ export class DeployRunner {
     emit({ type: "terminal", status: state, productionUrl: details.productionUrl ?? null, errorMessage: details.errorMessage ?? null });
     await this.outbox.drain(deploymentId);
   }
+}
+
+function managedUserKeys(raw: unknown): ManagedUserKey[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e): e is { key: string; secret?: unknown } => Boolean(e) && typeof (e as { key?: unknown }).key === "string")
+    .map((e) => ({ key: e.key, secret: e.secret === true }));
 }

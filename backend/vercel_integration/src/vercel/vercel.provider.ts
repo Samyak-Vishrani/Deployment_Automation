@@ -1,5 +1,5 @@
-import type { ProviderResponse } from "../http/provider-fetch";
-import { ProviderError } from "../http/provider-error";
+import type { ProviderResponse } from "@orbitops/integration-common/provider-fetch";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import type { ComponentSpec, LogLine, NormalisedStatus, RepoSpec, SourceMode } from "../types";
 import { toLogLines } from "./log-map";
 import { randomSuffix, vercelProjectName } from "./project-name";
@@ -409,6 +409,66 @@ export class VercelProvider {
       })),
     });
     expectOk(response, "saving environment variables");
+  }
+
+  /**
+   * Public env vars (the backend's URL, Phase 8): upserted as plain values for
+   * production and preview, and the keys we set before that are no longer
+   * wanted are deleted. Runs before the deploy, because frameworks inline
+   * NEXT_PUBLIC_* and the like at build time.
+   */
+  async syncPublicEnv(
+    ctx: VercelContext,
+    vercelProjectId: string,
+    vars: Array<{ key: string; value: string }>,
+    removeKeys: string[],
+  ): Promise<void> {
+    await this.setEnv(
+      ctx,
+      vercelProjectId,
+      vars.map((v) => ({ ...v, type: "plain", target: ["production", "preview"] })),
+    );
+    await this.removeEnvKeys(ctx, vercelProjectId, removeKeys);
+  }
+
+  /**
+   * The user's env vars (Phase 9): secrets as "sensitive" (write-only on
+   * Vercel too), the rest as "encrypted", for production and preview.
+   *
+   * `removeKeys` (no longer wanted) and `recreateKeys` (their secret flag
+   * flipped: Vercel cannot turn a Secret into a Config var in place) are
+   * deleted first, then everything is upserted. Values never appear in an
+   * error: Vercel's messages are about keys.
+   */
+  async syncUserEnv(
+    ctx: VercelContext,
+    vercelProjectId: string,
+    vars: Array<{ key: string; value: string; secret: boolean }>,
+    removeKeys: string[],
+    recreateKeys: string[] = [],
+  ): Promise<void> {
+    await this.removeEnvKeys(ctx, vercelProjectId, [...removeKeys, ...recreateKeys]);
+    await this.setEnv(
+      ctx,
+      vercelProjectId,
+      vars.map((v) => ({ key: v.key, value: v.value, type: v.secret ? "sensitive" : "encrypted", target: ["production", "preview"] })),
+    );
+  }
+
+  /** Deletes these keys from the project (every target); ones already gone are fine. */
+  private async removeEnvKeys(ctx: VercelContext, vercelProjectId: string, keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
+    const project = encodeURIComponent(vercelProjectId);
+    const listed = expectOk(
+      await vercelRequest<{ envs?: Array<{ id?: string; key?: string }> }>(ctx, "GET", `/v9/projects/${project}/env`),
+      "reading environment variables",
+    );
+    const remove = new Set(keys);
+    for (const env of listed.envs ?? []) {
+      if (!env.id || !env.key || !remove.has(env.key)) continue;
+      const response = await vercelRequest(ctx, "DELETE", `/v9/projects/${project}/env/${encodeURIComponent(env.id)}`);
+      if (response.status !== 404) expectOk(response, "removing an environment variable");
+    }
   }
 
   async destroy(ctx: VercelContext, vercelProjectId: string): Promise<void> {

@@ -1,11 +1,13 @@
 import type { Prisma, VercelDeployment } from "@prisma/client";
 import type { Db } from "../db";
-import { badRequest, notFound, ProviderError } from "../http/provider-error";
+import { badRequest, notFound, ProviderError } from "@orbitops/integration-common/provider-error";
 import type { CredentialsService } from "../credentials/credentials.service";
-import type { EventOutbox } from "../callbacks/outbox";
+import type { EventOutbox } from "@orbitops/integration-common/outbox";
 import { isTerminal, type DeployRequest, type StoredDeployInput } from "../types";
 import type { EnvVarInput, VercelProvider } from "../vercel/vercel.provider";
-import type { DeployQueue } from "./deploy-queue";
+import type { DeployQueue } from "@orbitops/integration-common/deploy-queue";
+import { EnvVault } from "@orbitops/integration-common/env-vault";
+import type { UserEnvVar } from "../types";
 import type { TokenVault } from "./token-vault";
 
 /** What GET /deployments/:id returns: the state, never the input's token (it has none). */
@@ -31,6 +33,8 @@ export class DeploymentsService {
     private readonly outbox: Pick<EventOutbox, "push" | "drain">,
     private readonly credentials: Pick<CredentialsService, "getToken" | "markInvalid">,
     private readonly provider: Pick<VercelProvider, "cancel" | "setEnv" | "destroy">,
+    /** The user's env var values (Phase 9), in memory until the run takes them. */
+    private readonly envVault: Pick<EnvVault<UserEnvVar>, "put"> = new EnvVault<UserEnvVar>(),
   ) {}
 
   /**
@@ -44,17 +48,20 @@ export class DeploymentsService {
     const existing = await this.db.vercelDeployment.findUnique({ where: { deploymentId: request.deploymentId } });
     if (existing) return toView(existing);
 
-    const { githubToken, ...stored } = request;
+    const { githubToken, envVars, ...rest } = request;
+    // Values never reach the database: only which keys were sent.
+    const stored: StoredDeployInput = { ...rest, ...(envVars ? { envKeys: envVars.map((v) => v.key) } : {}) };
     const row = await this.db.vercelDeployment.create({
       data: {
         deploymentId: request.deploymentId,
         userId: request.userId,
         componentId: request.component.id,
-        input: stored satisfies StoredDeployInput as unknown as Prisma.InputJsonValue,
+        input: stored as unknown as Prisma.InputJsonValue,
         state: "queued",
       },
     });
     this.tokens.put(request.deploymentId, githubToken);
+    if (envVars) this.envVault.put(request.deploymentId, envVars);
     this.queue.add({ deploymentId: row.deploymentId, componentId: row.componentId });
     return toView(row);
   }

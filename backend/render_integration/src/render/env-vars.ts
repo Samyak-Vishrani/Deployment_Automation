@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { ComponentSpec, EnvVar } from "../types";
 import type { RenderRuntime } from "./runtime-map";
 
@@ -31,21 +30,5 @@ export function toEnvVars(projectEnv: EnvVar[], component: ComponentSpec, runtim
   return [...vars].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => ({ key, value }));
 }
 
-/** Hash of keys and values, so an unchanged set skips every env call. Values never leave this function. */
-export function envHash(vars: EnvVar[]): string {
-  const hash = createHash("sha256");
-  for (const { key, value } of [...vars].sort((a, b) => a.key.localeCompare(b.key))) {
-    hash.update(key).update("\0").update(value).update("\0");
-  }
-  return hash.digest("hex");
-}
-
-/**
- * Keys to delete on Render: ones this service set before that are no longer
- * wanted. Anything added by hand on Render's dashboard was never "managed",
- * so it is never deleted.
- */
-export function keysToDelete(previouslyManaged: string[], next: EnvVar[]): string[] {
-  const keep = new Set(next.map((v) => v.key));
-  return previouslyManaged.filter((key) => !keep.has(key));
-}
+// Shared with vercel_integration since Phase 9; the hash is unchanged for Render's vars.
+export { envHash, keysToDelete } from "@orbitops/integration-common/env-hash";

@@ -8,13 +8,13 @@ import { asObject, rejectUnknownKeys } from "@/lib/projects/project-input";
  * service, which validates fully. The token itself never appears in an error.
  */
 
-export type ConnectableProvider = "vercel" | "render";
+export type ConnectableProvider = "vercel" | "render" | "neon";
 
 export function parseProviderParam(value: string): ConnectableProvider {
   if (!(PROVIDER_IDS as readonly string[]).includes(value) || value === "local_docker") {
     throw badRequest(`Unknown provider "${value}".`);
   }
-  if (value !== "vercel" && value !== "render") {
+  if (value !== "vercel" && value !== "render" && value !== "neon") {
     const provider = value as ProviderId;
     throw badRequest(`Connecting ${PROVIDER_LABEL[provider]} arrives in Phase ${PROVIDER_PHASE[provider]}.`);
   }
@@ -35,6 +35,33 @@ export function parseRenderPrefsBody(raw: unknown): { ownerId?: string; region?:
   }
   if (Object.keys(out).length === 0) {
     throw badRequest("Send at least one of ownerId, region or plan.");
+  }
+  return out;
+}
+
+/** Neon settings: `{ orgId?, regionId?, pgVersion? }`. The service validates the values. */
+export function parseNeonPrefsBody(raw: unknown): { orgId?: string | null; regionId?: string; pgVersion?: number } {
+  const body = asObject(raw);
+  rejectUnknownKeys(body, ["orgId", "regionId", "pgVersion"]);
+  const out: { orgId?: string | null; regionId?: string; pgVersion?: number } = {};
+  if (body.orgId !== undefined) {
+    if (body.orgId !== null && (typeof body.orgId !== "string" || !body.orgId)) {
+      throw badRequest("orgId must be a Neon organization id, or null for the key's default.");
+    }
+    out.orgId = body.orgId as string | null;
+  }
+  if (body.regionId !== undefined) {
+    if (typeof body.regionId !== "string" || !body.regionId) throw badRequest("regionId must be a Neon region id.");
+    out.regionId = body.regionId;
+  }
+  if (body.pgVersion !== undefined) {
+    if (typeof body.pgVersion !== "number" || !Number.isInteger(body.pgVersion)) {
+      throw badRequest("pgVersion must be a Postgres major version, e.g. 17.");
+    }
+    out.pgVersion = body.pgVersion;
+  }
+  if (Object.keys(out).length === 0) {
+    throw badRequest("Send at least one of orgId, regionId or pgVersion.");
   }
   return out;
 }

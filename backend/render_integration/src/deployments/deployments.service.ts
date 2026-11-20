@@ -1,12 +1,12 @@
 import type { Prisma, RenderDeployment } from "@prisma/client";
 import type { Db } from "../db";
-import { badRequest, notFound, ProviderError } from "../http/provider-error";
+import { badRequest, notFound, ProviderError } from "@orbitops/integration-common/provider-error";
 import type { CredentialsService } from "../credentials/credentials.service";
-import type { EventOutbox } from "../callbacks/outbox";
+import type { EventOutbox } from "@orbitops/integration-common/outbox";
 import type { RenderProvider } from "../render/render.provider";
 import { isTerminal, type DeployRequest, type EnvVar, type StoredDeployInput } from "../types";
-import type { DeployQueue } from "./deploy-queue";
-import type { EnvVault } from "./env-vault";
+import type { DeployQueue } from "@orbitops/integration-common/deploy-queue";
+import type { EnvVault } from "@orbitops/integration-common/env-vault";
 
 /** What GET /deployments/:id returns. */
 export interface DeploymentView {

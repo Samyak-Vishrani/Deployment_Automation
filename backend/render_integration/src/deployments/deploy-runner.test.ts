@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ProviderError } from "../http/provider-error";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 import { fakeDb, type FakeDb } from "../test-support/fake-db";
 import type { EnvVar, ProviderEvent, StoredDeployInput } from "../types";
 import type { StatusResult } from "../render/render.provider";
@@ -177,6 +177,13 @@ describe("DeployRunner", () => {
     expect(text).not.toContain(ENV_SECRET);
     expect(text).toContain("***REDACTED***");
     expect(text.split("server listening")).toHaveLength(2);
+  });
+
+  it("tags each relayed line: our own as orbitops, Render's as provider with its phase (Phase 12)", async () => {
+    await run(ctx.runner);
+    const lines = ctx.events.flatMap((e) => (e.type === "logs" ? e.lines : []));
+    expect(lines.find((l) => l.text.startsWith("==> Preparing"))).toMatchObject({ origin: "orbitops", phase: "deploy" });
+    expect(lines.find((l) => l.text === "server listening")).toMatchObject({ origin: "provider", phase: "build" });
   });
 
   it("stores the Render service before deploying, so a crash mid-deploy cannot create a second one", async () => {

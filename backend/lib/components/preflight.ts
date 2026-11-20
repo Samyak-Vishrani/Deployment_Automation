@@ -7,7 +7,9 @@
  */
 
 import type { ComponentKind, ProviderId } from "@prisma/client";
-import { CAN_DEPLOY, PROVIDER_LABEL, PROVIDER_PHASE, RENDER_FRAMEWORKS } from "./provider-rules";
+import { reservedReason } from "@/lib/env/env-rules";
+import { systemEnvKeys } from "@/lib/env/system-env";
+import { CAN_DEPLOY, NEON_ENGINES, PROVIDER_LABEL, PROVIDER_PHASE, RENDER_FRAMEWORKS } from "./provider-rules";
 
 export type CheckStatus = "pass" | "fail" | "pending";
 
@@ -44,12 +46,17 @@ export type PreflightComponent = {
   /** Read by the provider-specific checks (Render needs both). */
   framework?: string | null;
   startCmd?: string | null;
+  /** Read for the frontend's API URL key (react-scripts vs Vite). */
+  buildCmd?: string | null;
 };
+
+/** A component's stored env var names (its own + shared for a backend), and those with a value. */
+export type ComponentEnvKeys = { keys: string[]; filled: Set<string> };
 
 export type PreflightProject = {
   userId: string;
-  /** Env var names that have a non-empty value. */
-  filledEnvKeys: string[];
+  /** Phase 9: per component, from EnvVar. System keys (DATABASE_URL, the API URL) are added here. */
+  envFor(component: PreflightComponent): ComponentEnvKeys;
 };
 
 export type RepoTreeEntry = { path: string; type: "blob" | "tree" | string };
@@ -60,12 +67,6 @@ export type PreflightDeps = {
   readFile(path: string): Promise<string>;
   credentialState(userId: string, provider: ProviderId): Promise<CredentialState>;
 };
-
-/**
- * Env vars a configured database component will supply once it is provisioned,
- * so a backend's .env.example asking for them is not a missing value.
- */
-const PROVIDED_BY_DATABASE = ["DATABASE_URL"];
 
 export async function runPreflight(
   project: PreflightProject,
@@ -104,13 +105,21 @@ export async function runPreflight(
 
   const folders = new Set(tree?.entries.filter((e) => e.type === "tree").map((e) => e.path));
   const files = new Set(tree?.entries.filter((e) => e.type === "blob").map((e) => e.path));
-  const hasDatabase = components.some((c) => c.kind === "database");
-  const filled = new Set([...project.filledEnvKeys, ...(hasDatabase ? PROVIDED_BY_DATABASE : [])]);
 
   for (const component of components) {
-    if (component.kind === "database") continue;
+    if (component.kind === "database") {
+      if (component.provider === "neon") checks.push(...databaseChecks(component));
+      continue;
+    }
+    const env = project.envFor(component);
+    // What OrbitOps sets at deploy time (a Neon database's DATABASE_URL, the
+    // backend's URL on a frontend) is not a missing value.
+    const system = systemEnvKeys({ ...component, framework: component.framework ?? null, buildCmd: component.buildCmd ?? null }, components);
+    const filled = new Set([...env.filled, ...system.map((k) => k.key)]);
     checks.push(rootDirCheck(component, tree, folders, treeError));
     checks.push(await envCheck(component, files, filled, deps, treeError));
+    const reserved = reservedCheck(component, env.keys);
+    if (reserved) checks.push(reserved);
     if (component.provider === "render") checks.push(...renderChecks(component));
   }
 
@@ -124,8 +133,8 @@ export async function runPreflight(
   );
   const deployable: Record<string, boolean> = {};
   for (const component of components) {
+    // A database "deploys" by being provisioned (Neon, Phase 8).
     deployable[component.id] =
-      component.kind !== "database" &&
       CAN_DEPLOY.has(component.provider) &&
       credentialPasses.has(component.provider) &&
       checks.filter((c) => c.componentId === component.id).every((c) => c.status === "pass");
@@ -194,10 +203,29 @@ async function envCheck(
     return {
       ...base,
       status: "fail",
-      message: `${component.name}: ${examplePath} needs ${missing.join(", ")}, which ${missing.length === 1 ? "has" : "have"} no value.`,
+      message:
+        `${component.name}: ${examplePath} needs ${missing.join(", ")}, which ${missing.length === 1 ? "has" : "have"} no value. ` +
+        `Add ${missing.length === 1 ? "it" : "them"} under ${component.name} → Environment` +
+        (component.kind === "backend" ? " (or Shared)." : "."),
     };
   }
   return { ...base, status: "pass", message: `${component.name}: every variable in ${examplePath} has a value.` };
+}
+
+/**
+ * A stored key the provider sets itself (RENDER_*, VERCEL_*…). Saving refuses
+ * these, but a shared key saved before a Render backend existed can still
+ * reach one. Only reported when there is a problem.
+ */
+function reservedCheck(component: PreflightComponent, keys: string[]): PreflightCheck | null {
+  const reasons = keys.map((key) => reservedReason(key, component.provider)).filter((r): r is string => Boolean(r));
+  if (reasons.length === 0) return null;
+  return {
+    id: `env-reserved:${component.id}`,
+    componentId: component.id,
+    status: "fail",
+    message: `${component.name}: ${reasons.join("; ")}. Remove ${reasons.length === 1 ? "it" : "them"} from its Environment (or Shared).`,
+  };
 }
 
 async function credentialCheck(
@@ -233,7 +261,7 @@ async function credentialCheck(
       return {
         ...base,
         status: "fail",
-        message: `${label} rejected the saved ${provider === "render" ? "API key" : "token"}. Reconnect ${label} in Settings.`,
+        message: `${label} rejected the saved ${provider === "vercel" ? "token" : "API key"}. Reconnect ${label} in Settings.`,
       };
     case "unavailable":
       return {
@@ -276,6 +304,35 @@ function renderChecks(component: PreflightComponent): PreflightCheck[] {
     });
   }
   return checks;
+}
+
+/**
+ * What a Neon database needs: a Postgres engine. Migrations are the user's
+ * job, so the second check always passes and carries the advice.
+ */
+function databaseChecks(component: PreflightComponent): PreflightCheck[] {
+  const engine = component.framework?.trim().toLowerCase() ?? "";
+  const postgres = NEON_ENGINES.has(engine);
+  return [
+    {
+      id: `engine:${component.id}`,
+      componentId: component.id,
+      status: postgres ? "pass" : "fail",
+      message: postgres
+        ? `${component.name}: Postgres on Neon.`
+        : `${component.name}: Neon hosts Postgres only; this database is "${component.framework}". ` +
+          "Set the engine to postgres, or remove the database card.",
+    },
+    {
+      id: `migrations:${component.id}`,
+      componentId: component.id,
+      status: "pass",
+      message:
+        `${component.name}: the backend gets DATABASE_URL (pooled) and DATABASE_URL_UNPOOLED (direct). ` +
+        "Migrations are not run for you: add one to the backend's build command, e.g. " +
+        '"npm install && npx prisma migrate deploy" (with Prisma, set directUrl = env("DATABASE_URL_UNPOOLED")).',
+    },
+  ];
 }
 
 /** Variable names declared in a .env.example: `KEY=...` or `export KEY=...`, comments skipped. */

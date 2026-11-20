@@ -42,7 +42,7 @@ export function toLogLine(event: VercelLogEvent): LogLine | null {
 
   const at = Number(event.created ?? event.payload?.date ?? event.date ?? 0);
   const id = event.payload?.id ?? event.id ?? event.payload?.serial ?? event.serial ?? `${at}:${text}`;
-  return { id: String(id), at, stream, text: type === "command" ? `$ ${text}` : text };
+  return { id: String(id), at, stream, text: type === "command" ? `$ ${text}` : text, phase: "build" };
 }
 
 export function toLogLines(events: unknown): LogLine[] {

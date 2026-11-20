@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fakeDb } from "../test-support/fake-db";
 import type { DeployRequest } from "../types";
 import { DeploymentsService } from "./deployments.service";
-import { EnvVault } from "./env-vault";
+import { EnvVault } from "@orbitops/integration-common/env-vault";
 
 const request: DeployRequest = {
   deploymentId: "dep1",

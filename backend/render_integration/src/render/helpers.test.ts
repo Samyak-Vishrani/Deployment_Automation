@@ -191,8 +191,8 @@ describe("log mapping", () => {
       ],
     });
     expect(lines).toEqual([
-      { id: "a", at: Date.parse("2026-11-03T10:00:00Z"), stream: "stdout", text: "==> Running build command" },
-      { id: "b", at: Date.parse("2026-11-03T10:00:01Z"), stream: "stderr", text: "boom" },
+      { id: "a", at: Date.parse("2026-11-03T10:00:00Z"), stream: "stdout", text: "==> Running build command", phase: "build" },
+      { id: "b", at: Date.parse("2026-11-03T10:00:01Z"), stream: "stderr", text: "boom", phase: "runtime" },
     ]);
   });
 

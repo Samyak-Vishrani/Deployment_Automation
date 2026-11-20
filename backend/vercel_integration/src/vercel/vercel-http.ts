@@ -1,5 +1,5 @@
-import { NetworkError, providerFetch, type ProviderFetchOptions, type ProviderResponse } from "../http/provider-fetch";
-import { ProviderError } from "../http/provider-error";
+import { NetworkError, providerFetch, type ProviderFetchOptions, type ProviderResponse } from "@orbitops/integration-common/provider-fetch";
+import { ProviderError } from "@orbitops/integration-common/provider-error";
 
 /** Who a Vercel call is made as. `teamId` is appended to every request when set. */
 export interface VercelContext {

@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 /**
  * Every provider account the user can connect, and its state. Never a token.
  *
- * Vercel's and Render's states come from their integration services. When a
+ * Vercel's, Render's and Neon's states come from their integration services. When a
  * service is down its row says "unavailable" instead of failing the whole
  * list, so the Settings page still renders.
  */
@@ -18,7 +18,7 @@ export async function GET(): Promise<NextResponse> {
     const user = await requireUser();
     const rt = services();
 
-    const lookup = async (provider: "vercel" | "render"): Promise<Record<string, unknown>> => {
+    const lookup = async (provider: "vercel" | "render" | "neon"): Promise<Record<string, unknown>> => {
       try {
         return { ...(await rt[provider].getCredential(user.id)) };
       } catch (error) {
@@ -27,12 +27,8 @@ export async function GET(): Promise<NextResponse> {
       }
     };
 
-    const [vercel, render] = await Promise.all([lookup("vercel"), lookup("render")]);
-    return NextResponse.json([
-      vercel,
-      render,
-      { provider: "neon", state: "unavailable", message: "Provisioning on Neon arrives in Phase 8." },
-    ]);
+    const [vercel, render, neon] = await Promise.all([lookup("vercel"), lookup("render"), lookup("neon")]);
+    return NextResponse.json([vercel, render, neon]);
   } catch (error) {
     return toErrorResponse(error);
   }

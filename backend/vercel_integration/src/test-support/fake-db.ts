@@ -90,7 +90,17 @@ export function fakeDb() {
   const now = () => new Date();
   const db = {
     vercelCredential: table(() => ({ id: id(), teams: [], invalidAt: null, teamId: null, teamSlug: null, createdAt: now(), updatedAt: now() })),
-    vercelProject: table(() => ({ id: id(), teamId: null, gitLinked: false, createdAt: now(), updatedAt: now() })),
+    vercelProject: table(() => ({
+      id: id(),
+      teamId: null,
+      gitLinked: false,
+      envHash: null,
+      managedEnvKeys: [],
+      userEnvHash: null,
+      managedUserEnvKeys: [],
+      createdAt: now(),
+      updatedAt: now(),
+    })),
     vercelDeployment: table(() => ({
       id: id(),
       state: "queued",

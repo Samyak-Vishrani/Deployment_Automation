@@ -1,7 +1,9 @@
 import { toErrorResponse } from "@/lib/api/http-error";
-import { sseResponse, startHeartbeat } from "@/lib/api/sse";
+import { sseResponse, startHeartbeat, type SseHandle } from "@/lib/api/sse";
 import { requireUser } from "@/lib/auth/current-user";
 import { getOwnedDeployment } from "@/lib/deployments/access";
+import type { BuildStreamEvent } from "@/lib/logs/log-types";
+import { readNdjson } from "@/lib/logs/ndjson";
 import { services } from "@/lib/runtime";
 
 export const runtime = "nodejs";
@@ -14,51 +16,66 @@ type RouteContext = {
 const TERMINAL = ["success", "failed", "cancelled"];
 
 /**
- * Live build log.
+ * One deployment's build log, live (Phase 12: read from the logs service).
  *
- * SSE rather than a WebSocket: this is strictly one-directional, EventSource is
- * built into the browser so the frontend needs no dependency, and it rides the
- * plain HTTP response a route handler already returns.
+ * Each line is `event: entry`, `id: <seq>`, `data: <LogEntry JSON>`; the log
+ * ends with `done`. Replay-then-tail, so opening the page mid-build still
+ * shows the whole log. A reconnecting EventSource sends `Last-Event-ID` and
+ * gets only what it missed (`?afterSeq=` does the same).
  *
- * Replay-then-tail, so opening the page mid-build still shows the whole log. If
- * the deployment has already finished, the replay is followed immediately by
- * 'done' and the stream completes - one code path on the client for both.
+ * A finished deployment is read in pages and closed with its own status, so
+ * the page never waits on a log the logs service did not see closed (it was
+ * down when the deploy ended).
  */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
     const user = await requireUser();
     const { deploymentId } = await context.params;
     const deployment = await getOwnedDeployment(user.id, deploymentId);
+    const url = new URL(request.url);
+    const resume = Number(request.headers.get("last-event-id") ?? url.searchParams.get("afterSeq") ?? 0);
+    const afterSeq = Number.isInteger(resume) && resume > 0 ? resume : 0;
+    const logs = services().logs;
+    const done = (handle: SseHandle, status: string | null) => {
+      handle.send({ type: "done", data: JSON.stringify({ status: status ?? deployment.status }) });
+      handle.close();
+    };
 
-    const rt = services();
-    const history = await rt.logs.read(deployment.projectId, deploymentId);
-    const finished = TERMINAL.includes(deployment.status);
-
-    return sseResponse(request, (handle) => {
-      for (const line of history ? history.split("\n").filter(Boolean) : []) {
-        handle.send({ type: "line", data: line });
-      }
-
-      if (finished) {
-        handle.send({ type: "done", data: JSON.stringify({ status: deployment.status }) });
-        handle.close();
-        return;
-      }
-
-      // Subscribing only after the replay is written is what keeps the log in
-      // order: a line emitted mid-replay is still queued on the stream behind
-      // the history, because everything goes through the same controller.
-      const unsubscribe = rt.logs.subscribe(deploymentId, (event) => {
-        handle.send({ type: event.type, data: event.data });
-        if (event.type === "done") {
-          handle.close();
-        }
+    if (TERMINAL.includes(deployment.status)) {
+      // Read before the response starts, so a logs-service outage is a normal JSON error.
+      const first = await logs.entries(deployment.projectId, deploymentId, { afterSeq, limit: 5000 });
+      return sseResponse(request, (handle) => {
+        void (async () => {
+          let page = first;
+          for (;;) {
+            for (const entry of page.entries) handle.send({ type: "entry", id: String(entry.seq), data: JSON.stringify(entry) });
+            if (page.entries.length < 5000) break;
+            page = await logs.entries(deployment.projectId, deploymentId, { afterSeq: page.nextSeq, limit: 5000 });
+          }
+          done(handle, deployment.status);
+        })().catch(() => handle.close());
       });
-      const stopHeartbeat = startHeartbeat(handle);
+    }
 
+    const upstream = new AbortController();
+    const response = await logs.openStream(deployment.projectId, deploymentId, afterSeq, upstream.signal);
+    return sseResponse(request, (handle) => {
+      void (async () => {
+        for await (const event of readNdjson<BuildStreamEvent>(response.body, upstream.signal)) {
+          if (event.type === "entry") {
+            handle.send({ type: "entry", id: String(event.entry.seq), data: JSON.stringify(event.entry) });
+          } else if (event.type === "done") {
+            done(handle, event.status);
+            return;
+          }
+        }
+        // The logs service went away mid-stream: closing lets EventSource reconnect with Last-Event-ID.
+        handle.close();
+      })().catch(() => handle.close());
+      const stopHeartbeat = startHeartbeat(handle);
       return () => {
-        unsubscribe();
         stopHeartbeat();
+        upstream.abort();
       };
     });
   } catch (error) {

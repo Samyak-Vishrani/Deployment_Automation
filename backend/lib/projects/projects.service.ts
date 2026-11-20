@@ -5,16 +5,25 @@ import type { EventsService } from "@/lib/events/events.service";
 import type { GithubAppService } from "@/lib/github/github-app.service";
 import type { GithubUserService } from "@/lib/github/github-user.service";
 import { InvalidRepoUrlError, parseRepoUrl } from "@/lib/github/repo-url";
+import { sharedRowsFor, type EnvVarsService } from "@/lib/env/env-vars.service";
 import type { CreateProjectInput, UpdateProjectInput } from "./project-input";
 import { createWithAllocatedPort, readPortRange } from "./port-allocator";
 
 /**
  * A project as returned by the API.
  *
- * `envVars` is reduced to its KEYS. The values are frequently secrets, and a
- * list endpoint is the easiest place to leak them by accident.
+ * `envKeys` are the SHARED env var keys (Phase 9: from EnvVar). Values are
+ * never part of a project: they are frequently secrets, and a list endpoint is
+ * the easiest place to leak them by accident.
  */
 export type ProjectView = Omit<Project, "envVars"> & { envKeys: string[] };
+
+type ProjectWithEnv = Project & { env?: { key: string }[] };
+
+/** The shared keys, read with every project the API returns. */
+const SHARED_KEYS = {
+  env: { where: { componentId: null }, select: { key: true }, orderBy: { key: "asc" } },
+} satisfies Prisma.ProjectInclude;
 
 export class ProjectsService {
   private readonly portRange = readPortRange();
@@ -25,14 +34,14 @@ export class ProjectsService {
     private readonly githubUser: GithubUserService,
     private readonly docker: DockerService,
     private readonly events: EventsService,
+    private readonly envVars?: Pick<EnvVarsService, "replaceSharedFromRecord">,
   ) {}
 
-  toView(project: Project): ProjectView {
-    const { envVars, ...rest } = project;
-    return {
-      ...rest,
-      envKeys: Object.keys((envVars as Record<string, string>) ?? {}),
-    };
+  toView(project: ProjectWithEnv): ProjectView {
+    // envVars is dropped on purpose: deprecated (Phase 9), always {}.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { envVars, env, ...rest } = project;
+    return { ...rest, envKeys: (env ?? []).map((e) => e.key) };
   }
 
   async create(userId: string, dto: CreateProjectInput): Promise<ProjectView> {
@@ -65,12 +74,15 @@ export class ProjectsService {
     }
 
     const slug = dto.slug?.trim() || this.slugify(metadata.repo);
+    // Validated (and sealed) before anything is written; a bad key is a 400.
+    const envRows = (projectId: string) => sharedRowsFor(projectId, dto.envVars ?? {});
+    envRows("validation");
     const name = dto.name?.trim() || metadata.repo;
 
     try {
       const project = await this.prisma.$transaction((tx) =>
-        createWithAllocatedPort(tx, this.portRange, (hostPort) =>
-          tx.project.create({
+        createWithAllocatedPort(tx, this.portRange, async (hostPort) => {
+          const created = await tx.project.create({
             data: {
               userId,
               name,
@@ -93,12 +105,15 @@ export class ProjectsService {
               watchPaths: dto.watchPaths ?? [],
               dockerfilePath: dto.dockerfilePath?.trim() || "Dockerfile",
               buildContext: dto.buildContext?.trim() || ".",
-              envVars: (dto.envVars ?? {}) as Prisma.InputJsonValue,
+              // Phase 9: env vars live in EnvVar (sealed), as the shared set.
               containerPort: dto.containerPort ?? 3000,
               hostPort,
             },
-          }),
-        ),
+          });
+          const rows = envRows(created.id);
+          if (rows.length > 0) await tx.envVar.createMany({ data: rows });
+          return tx.project.findUniqueOrThrow({ where: { id: created.id }, include: SHARED_KEYS });
+        }),
       );
 
       console.log(
@@ -128,6 +143,7 @@ export class ProjectsService {
     const projects = await this.prisma.project.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
+      include: SHARED_KEYS,
     });
     return projects.map((p) => this.toView(p));
   }
@@ -143,7 +159,8 @@ export class ProjectsService {
   }
 
   async findOne(userId: string, id: string): Promise<ProjectView> {
-    return this.toView(await this.getOrThrow(userId, id));
+    await this.getOrThrow(userId, id);
+    return this.toView(await this.prisma.project.findUniqueOrThrow({ where: { id }, include: SHARED_KEYS }));
   }
 
   async update(userId: string, id: string, dto: UpdateProjectInput): Promise<ProjectView> {
@@ -173,10 +190,16 @@ export class ProjectsService {
         ...(dto.watchPaths !== undefined && { watchPaths: dto.watchPaths }),
         ...(dto.dockerfilePath !== undefined && { dockerfilePath: dto.dockerfilePath }),
         ...(dto.buildContext !== undefined && { buildContext: dto.buildContext }),
-        ...(dto.envVars !== undefined && { envVars: dto.envVars as Prisma.InputJsonValue }),
         ...(dto.containerPort !== undefined && { containerPort: dto.containerPort }),
       },
+      include: SHARED_KEYS,
     });
+    // The pre-Phase-9 field: replaces the shared set (keys left out are deleted).
+    if (dto.envVars !== undefined) {
+      if (!this.envVars) throw new Error("ProjectsService was built without EnvVarsService.");
+      await this.envVars.replaceSharedFromRecord(userId, id, dto.envVars);
+      return this.findOne(userId, id);
+    }
     this.events.projectChanged(id, "updated");
     return this.toView(updated);
   }
